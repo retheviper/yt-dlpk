@@ -1,0 +1,12 @@
+{
+  "ytDlp": {
+    "windows": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+    "mac": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+    "linux": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+  },
+  "ffmpeg": {
+    "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+    "mac": "https://evermeet.cx/ffmpeg/getrelease/zip",
+    "linux": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz"
+  }
+}
