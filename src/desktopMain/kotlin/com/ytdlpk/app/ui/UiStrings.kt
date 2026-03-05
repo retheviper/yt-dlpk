@@ -16,6 +16,7 @@ data class UiStrings(
     val quickQuality: String,
     val quickPlaylistMode: String,
     val quickDownloadOnPaste: String,
+    val notifyWhenInactive: String,
     val quickDownload: String,
     val loadingFormats: String,
     val analyzeForFormats: String,
@@ -52,7 +53,9 @@ data class UiStrings(
     val noActiveProgress: String,
     val errorPrefix: String,
     val infoTitle: String,
-    val ok: String
+    val ok: String,
+    val downloadCompleteNotification: String,
+    val downloadFailedNotification: String
 )
 
 fun uiStrings(language: AppLanguage): UiStrings {
@@ -71,6 +74,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             quickQuality = "画質プロファイル",
             quickPlaylistMode = "プレイリスト",
             quickDownloadOnPaste = "貼り付け時に即ダウンロード",
+            notifyWhenInactive = "非アクティブ時に完了通知を表示",
             quickDownload = "クイックダウンロード",
             loadingFormats = "形式を読み込み中...",
             analyzeForFormats = "解析すると形式一覧が表示されます",
@@ -107,7 +111,9 @@ fun uiStrings(language: AppLanguage): UiStrings {
             noActiveProgress = "進行中の処理なし",
             errorPrefix = "エラー",
             infoTitle = "情報",
-            ok = "OK"
+            ok = "OK",
+            downloadCompleteNotification = "ダウンロードが完了しました",
+            downloadFailedNotification = "ダウンロードに失敗しました"
         )
 
         AppLanguage.KOREAN -> UiStrings(
@@ -124,6 +130,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             quickQuality = "화질 프로필",
             quickPlaylistMode = "플레이리스트 모드",
             quickDownloadOnPaste = "붙여넣기 시 바로 다운로드",
+            notifyWhenInactive = "창이 비활성화일 때 완료 알림 표시",
             quickDownload = "퀵 다운로드",
             loadingFormats = "포맷 불러오는 중...",
             analyzeForFormats = "분석하면 포맷 목록이 표시됩니다",
@@ -160,7 +167,9 @@ fun uiStrings(language: AppLanguage): UiStrings {
             noActiveProgress = "진행 중인 작업 없음",
             errorPrefix = "오류",
             infoTitle = "안내",
-            ok = "확인"
+            ok = "확인",
+            downloadCompleteNotification = "다운로드가 완료되었습니다",
+            downloadFailedNotification = "다운로드에 실패했습니다"
         )
 
         AppLanguage.ENGLISH -> UiStrings(
@@ -177,6 +186,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             quickQuality = "Quality profile",
             quickPlaylistMode = "Playlist mode",
             quickDownloadOnPaste = "Download immediately on paste",
+            notifyWhenInactive = "Show completion notification when inactive",
             quickDownload = "Quick Download",
             loadingFormats = "Loading formats...",
             analyzeForFormats = "Analyze to load format list",
@@ -213,7 +223,9 @@ fun uiStrings(language: AppLanguage): UiStrings {
             noActiveProgress = "No active progress",
             errorPrefix = "Error",
             infoTitle = "Info",
-            ok = "OK"
+            ok = "OK",
+            downloadCompleteNotification = "Download completed",
+            downloadFailedNotification = "Download failed"
         )
     }
 }

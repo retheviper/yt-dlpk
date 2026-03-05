@@ -221,6 +221,18 @@ fun App(viewModel: AppViewModel) {
                         }
                     )
                 }
+                state.errorDialogMessage?.let { message ->
+                    AlertDialog(
+                        onDismissRequest = { viewModel.dismissErrorDialog() },
+                        title = { Text(s.errorPrefix) },
+                        text = { Text(message) },
+                        confirmButton = {
+                            TextButton(onClick = { viewModel.dismissErrorDialog() }) {
+                                Text(s.ok)
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -576,6 +588,18 @@ private fun GlobalOptionsSection(state: AppState, viewModel: AppViewModel, p: Pa
                 width = 140.dp,
                 p = p
             )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Checkbox(
+                checked = settings.notifyOnDownloadCompleteWhenInactive,
+                onCheckedChange = { viewModel.onSettingsChange(settings.copy(notifyOnDownloadCompleteWhenInactive = it)) }
+            )
+            Text(s.notifyWhenInactive, color = p.textMain)
         }
     }
 }

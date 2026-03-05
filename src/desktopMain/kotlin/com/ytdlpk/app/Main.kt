@@ -1,6 +1,8 @@
 package com.ytdlpk.app
 
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -15,6 +17,7 @@ import com.ytdlpk.app.service.YtDlpCommandBuilder
 import com.ytdlpk.app.service.YtDlpService
 import com.ytdlpk.app.ui.App
 import com.ytdlpk.app.ui.AppViewModel
+import com.ytdlpk.app.util.updateAppIconProgress
 import java.awt.Dimension
 import java.nio.file.Paths
 
@@ -50,8 +53,16 @@ fun main() = application {
         title = "yt-dlpk",
         state = windowState
     ) {
+        val state by viewModel.state.collectAsState()
         LaunchedEffect(Unit) {
             window.minimumSize = Dimension(1180, 800)
+        }
+        LaunchedEffect(state.isDownloading, state.progress.percent) {
+            updateAppIconProgress(
+                window = window,
+                isDownloading = state.isDownloading,
+                percent = state.progress.percent
+            )
         }
         App(viewModel)
     }

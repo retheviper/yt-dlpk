@@ -13,9 +13,11 @@ import com.ytdlpk.app.service.SettingsRepository
 import com.ytdlpk.app.service.ToolManager
 import com.ytdlpk.app.service.YtDlpService
 import com.ytdlpk.app.util.formatSortScore
+import com.ytdlpk.app.util.isAppWindowFocused
 import com.ytdlpk.app.util.parseResolutionScore
 import com.ytdlpk.app.util.resolutionMaxSide
 import com.ytdlpk.app.util.resolutionMinSide
+import com.ytdlpk.app.util.showDesktopNotification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -87,6 +89,7 @@ class AppViewModel(
     }
 
     fun dismissInfoMessage() = update { it.copy(infoMessage = null) }
+    fun dismissErrorDialog() = update { it.copy(errorDialogMessage = null) }
 
     fun checkLatestToolVersions() {
         scope.launch {
@@ -236,12 +239,14 @@ class AppViewModel(
             onStderrLine = { addLog("[err] $it") },
             onProgress = { progress -> update { it.copy(progress = progress) } },
             onExit = { code ->
+                val dialogMessage = handleDownloadExit(code)
                 update {
                     it.copy(
                         isDownloading = false,
                         progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
                         logs = (it.logs + "Download finished with code $code").takeLast(400),
-                        lastError = if (code == 0) null else "Download failed: exit code $code"
+                        lastError = if (code == 0) null else "Download failed: exit code $code",
+                        errorDialogMessage = dialogMessage
                     )
                 }
             }
@@ -292,12 +297,14 @@ class AppViewModel(
             onStderrLine = { addLog("[err] $it") },
             onProgress = { progress -> update { it.copy(progress = progress) } },
             onExit = { code ->
+                val dialogMessage = handleDownloadExit(code)
                 update {
                     it.copy(
                         isDownloading = false,
                         progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
                         logs = (it.logs + "Quick download finished with code $code").takeLast(400),
-                        lastError = if (code == 0) null else "Quick download failed: exit code $code"
+                        lastError = if (code == 0) null else "Quick download failed: exit code $code",
+                        errorDialogMessage = dialogMessage
                     )
                 }
             }
@@ -356,6 +363,34 @@ class AppViewModel(
 
     private fun update(block: (AppState) -> AppState) {
         _state.update(block)
+    }
+
+    private fun handleDownloadExit(code: Int): String? {
+        val snapshot = state.value
+        val s = uiStrings(snapshot.settings.language)
+        val isFocused = isAppWindowFocused()
+
+        if (code == 0) {
+            if (snapshot.settings.notifyOnDownloadCompleteWhenInactive && !isFocused) {
+                showDesktopNotification(
+                    title = "yt-dlpk",
+                    message = s.downloadCompleteNotification
+                )
+            }
+            return null
+        }
+
+        val failureMessage = "${s.downloadFailedNotification} (exit code: $code)"
+        if (isFocused) {
+            return failureMessage
+        }
+        if (snapshot.settings.notifyOnDownloadCompleteWhenInactive) {
+            showDesktopNotification(
+                title = "yt-dlpk",
+                message = failureMessage
+            )
+        }
+        return null
     }
 
     private fun pickBestFormatId(formats: List<FormatEntry>, kind: FormatKind): String? {

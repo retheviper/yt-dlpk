@@ -23,6 +23,7 @@ data class AppState(
     val logs: List<String> = emptyList(),
     val lastError: String? = null,
     val infoMessage: String? = null,
+    val errorDialogMessage: String? = null,
     val toolsReady: Boolean = false,
     val toolStatus: String = "Checking tools...",
     val ytDlpVersion: String = "-",

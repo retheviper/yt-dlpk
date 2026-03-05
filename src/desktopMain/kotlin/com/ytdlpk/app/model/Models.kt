@@ -120,6 +120,7 @@ data class AppSettings(
     val quickQualityProfile: QuickQualityProfile = QuickQualityProfile.UP_TO_1080P,
     val quickPlaylistMode: PlaylistMode = PlaylistMode.PLAYLIST,
     val quickDownloadOnPaste: Boolean = false,
+    val notifyOnDownloadCompleteWhenInactive: Boolean = true,
     val homeTab: HomeTab = HomeTab.STANDARD,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val language: AppLanguage = AppLanguage.ENGLISH
