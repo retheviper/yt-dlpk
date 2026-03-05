@@ -267,14 +267,7 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = {
-                readClipboardText()?.let { txt ->
-                    val clipboardUrl = txt.trim()
-                    if (state.settings.quickDownloadOnPaste) {
-                        viewModel.quickDownload(urlOverride = clipboardUrl)
-                    } else {
-                        viewModel.onUrlChange(clipboardUrl)
-                    }
-                }
+                readClipboardText()?.let { txt -> viewModel.onUrlChange(txt) }
             },
             colors = ButtonDefaults.buttonColors(
                 backgroundColor = p.panelSoft.copy(alpha = 0.95f),
@@ -318,7 +311,17 @@ private fun QuickTopBar(state: AppState, viewModel: AppViewModel, p: Palette, s:
 
         Spacer(Modifier.width(8.dp))
         Button(
-            onClick = { readClipboardText()?.let { txt -> viewModel.onUrlChange(txt) } },
+            onClick = {
+                val clipboardUrl = readClipboardText()?.trim()
+                if (clipboardUrl.isNullOrBlank()) {
+                    viewModel.showInfo("Clipboard does not contain a text URL.")
+                } else {
+                    viewModel.onUrlChange(clipboardUrl)
+                    if (state.settings.quickDownloadOnPaste) {
+                        viewModel.quickDownload(urlOverride = clipboardUrl)
+                    }
+                }
+            },
             colors = ButtonDefaults.buttonColors(
                 backgroundColor = p.panelSoft.copy(alpha = 0.95f),
                 contentColor = p.textMain
@@ -859,7 +862,12 @@ private fun ProgressSection(state: AppState, p: Palette, s: UiStrings) {
 private fun readClipboardText(): String? {
     return runCatching {
         val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        clipboard.getData(DataFlavor.stringFlavor) as? String
+        val contents = clipboard.getContents(null) ?: return@runCatching null
+        if (contents.isDataFlavorSupported(DataFlavor.stringFlavor)) {
+            return@runCatching contents.getTransferData(DataFlavor.stringFlavor) as? String
+        }
+        val textFlavor = contents.transferDataFlavors.firstOrNull { it.isFlavorTextType } ?: return@runCatching null
+        textFlavor.getReaderForText(contents)?.use { reader -> reader.readText() }
     }.getOrNull()
 }
 

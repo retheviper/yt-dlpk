@@ -88,6 +88,8 @@ class AppViewModel(
         update { it.copy(settings = settings) }
     }
 
+    fun showInfo(message: String) = update { it.copy(infoMessage = message) }
+
     fun dismissInfoMessage() = update { it.copy(infoMessage = null) }
     fun dismissErrorDialog() = update { it.copy(errorDialogMessage = null) }
 
@@ -255,12 +257,24 @@ class AppViewModel(
 
     fun quickDownload(urlOverride: String? = null) {
         val snapshot = state.value
-        val toolPaths = tools ?: return
         val effectiveUrl = (urlOverride ?: snapshot.url).trim()
-        if (snapshot.isDownloading || effectiveUrl.isBlank()) return
 
         if (urlOverride != null && snapshot.url != effectiveUrl) {
             update { it.copy(url = effectiveUrl) }
+        }
+
+        if (snapshot.isDownloading) {
+            update { it.copy(infoMessage = "Download is already in progress.") }
+            return
+        }
+        if (effectiveUrl.isBlank()) {
+            update { it.copy(infoMessage = "URL is empty. Paste a valid URL and try again.") }
+            return
+        }
+        val toolPaths = tools
+        if (toolPaths == null) {
+            update { it.copy(infoMessage = "Tools are not ready yet. Please wait a moment and try again.") }
+            return
         }
 
         val options = DownloadOptions(
