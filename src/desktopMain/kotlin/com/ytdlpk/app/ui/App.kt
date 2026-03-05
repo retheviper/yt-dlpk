@@ -58,7 +58,9 @@ import com.ytdlpk.app.model.AppLanguage
 import com.ytdlpk.app.model.AppState
 import com.ytdlpk.app.model.FormatEntry
 import com.ytdlpk.app.model.FormatKind
+import com.ytdlpk.app.model.HomeTab
 import com.ytdlpk.app.model.PlaylistMode
+import com.ytdlpk.app.model.QuickQualityProfile
 import com.ytdlpk.app.model.ThemeMode
 import com.ytdlpk.app.util.formatDuration
 import com.ytdlpk.app.util.formatSortScore
@@ -101,8 +103,9 @@ private val lightPalette = Palette(
 @Composable
 fun App(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
-    var mainTab by remember { mutableStateOf(0) }
+    var settingsTab by remember { mutableStateOf(0) }
     val s = uiStrings(state.settings.language)
+    val screen = state.settings.homeTab
     val isDark = when (state.settings.themeMode) {
         ThemeMode.DARK -> true
         ThemeMode.LIGHT -> false
@@ -118,15 +121,42 @@ fun App(viewModel: AppViewModel) {
                 .padding(16.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                TopBar(state, viewModel, p, s)
-
-                Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    RightPreviewPanel(
-                        state = state,
-                        p = p,
-                        modifier = Modifier.weight(1f),
-                        onPlaylistModeChange = viewModel::onPlaylistMode
+                TabRow(
+                    selectedTabIndex = when (screen) {
+                        HomeTab.STANDARD -> 0
+                        HomeTab.QUICK -> 1
+                        HomeTab.SETTINGS -> 2
+                    },
+                    backgroundColor = p.panel,
+                    contentColor = p.accent
+                ) {
+                    Tab(
+                        selected = screen == HomeTab.STANDARD,
+                        onClick = { viewModel.onSettingsChange(state.settings.copy(homeTab = HomeTab.STANDARD)) },
+                        text = { Text(s.standardMode) }
                     )
+                    Tab(
+                        selected = screen == HomeTab.QUICK,
+                        onClick = { viewModel.onSettingsChange(state.settings.copy(homeTab = HomeTab.QUICK)) },
+                        text = { Text(s.quickMode) }
+                    )
+                    Tab(
+                        selected = screen == HomeTab.SETTINGS,
+                        onClick = { viewModel.onSettingsChange(state.settings.copy(homeTab = HomeTab.SETTINGS)) },
+                        text = { Text(s.globalTab) }
+                    )
+                }
+
+                if (screen == HomeTab.STANDARD) {
+                    TopBar(state, viewModel, p, s)
+
+                    Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        RightPreviewPanel(
+                            state = state,
+                            p = p,
+                            modifier = Modifier.weight(1f),
+                            onPlaylistModeChange = viewModel::onPlaylistMode
+                        )
 
                     Column(modifier = Modifier.weight(1.8f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Column(
@@ -136,22 +166,47 @@ fun App(viewModel: AppViewModel) {
                                 .background(p.panel, RoundedCornerShape(10.dp))
                                 .padding(10.dp)
                         ) {
-                            TabRow(selectedTabIndex = mainTab, backgroundColor = p.panel, contentColor = p.accent) {
-                                Tab(selected = mainTab == 0, onClick = { mainTab = 0 }, text = { Text(s.formatsTab) })
-                                Tab(selected = mainTab == 1, onClick = { mainTab = 1 }, text = { Text(s.optionsTab) })
-                                Tab(selected = mainTab == 2, onClick = { mainTab = 2 }, text = { Text(s.globalTab) })
-                            }
-                            Spacer(Modifier.height(10.dp))
-                            when (mainTab) {
-                                0 -> FormatSection(state, viewModel, p, s)
-                                1 -> OptionsSection(state, viewModel, p, s)
-                                else -> GlobalOptionsSection(state, viewModel, p, s)
-                            }
+                            FormatSection(state, viewModel, p, s)
                         }
                     }
                 }
 
-                BottomActionBar(state, viewModel, p, s)
+                    BottomActionBar(state, viewModel, p, s)
+                } else if (screen == HomeTab.QUICK) {
+                    QuickTopBar(state, viewModel, p, s)
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .background(p.panel, RoundedCornerShape(10.dp))
+                            .padding(10.dp)
+                    ) {
+                        QuickDownloadSection(state = state, viewModel = viewModel, p = p, s = s)
+                    }
+
+                    QuickBottomActionBar(state, viewModel, p, s)
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .background(p.panel, RoundedCornerShape(10.dp))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TabRow(selectedTabIndex = settingsTab, backgroundColor = p.panel, contentColor = p.accent) {
+                            Tab(selected = settingsTab == 0, onClick = { settingsTab = 0 }, text = { Text(s.optionsTab) })
+                            Tab(selected = settingsTab == 1, onClick = { settingsTab = 1 }, text = { Text(s.nestedGlobalTab) })
+                        }
+                        if (settingsTab == 0) {
+                            OptionsSection(state = state, viewModel = viewModel, p = p, s = s)
+                        } else {
+                            GlobalOptionsSection(state = state, viewModel = viewModel, p = p, s = s)
+                        }
+                    }
+                }
+
                 ProgressSection(state, p, s)
                 state.lastError?.let { Text("${s.errorPrefix}: $it", color = Color(0xFFFF6B6B)) }
                 state.infoMessage?.let { message ->
@@ -199,7 +254,16 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
 
         Spacer(Modifier.width(8.dp))
         Button(
-            onClick = { readClipboardText()?.let { txt -> viewModel.onUrlChange(txt) } },
+            onClick = {
+                readClipboardText()?.let { txt ->
+                    val clipboardUrl = txt.trim()
+                    if (state.settings.quickDownloadOnPaste) {
+                        viewModel.quickDownload(urlOverride = clipboardUrl)
+                    } else {
+                        viewModel.onUrlChange(clipboardUrl)
+                    }
+                }
+            },
             colors = ButtonDefaults.buttonColors(
                 backgroundColor = p.panelSoft.copy(alpha = 0.95f),
                 contentColor = p.textMain
@@ -208,9 +272,46 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { viewModel.analyze() },
-            enabled = !state.isAnalyzing && state.toolsReady,
+            enabled = !state.isAnalyzing && !state.isDownloading && state.toolsReady,
             colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E88E5), contentColor = Color.White)
         ) { Text(s.analyze) }
+    }
+}
+
+@Composable
+private fun QuickTopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiStrings) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(p.panel, RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = state.url,
+            onValueChange = viewModel::onUrlChange,
+            label = { Text(s.enterUrl) },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+            colors = TextFieldDefaults.outlinedTextFieldColors(
+                textColor = p.textMain,
+                backgroundColor = p.panelSoft,
+                cursorColor = p.accent,
+                focusedBorderColor = p.accent,
+                unfocusedBorderColor = p.textSub.copy(alpha = 0.6f),
+                focusedLabelColor = p.accent,
+                unfocusedLabelColor = p.textSub
+            )
+        )
+
+        Spacer(Modifier.width(8.dp))
+        Button(
+            onClick = { readClipboardText()?.let { txt -> viewModel.onUrlChange(txt) } },
+            colors = ButtonDefaults.buttonColors(
+                backgroundColor = p.panelSoft.copy(alpha = 0.95f),
+                contentColor = p.textMain
+            )
+        ) { Text("📋") }
     }
 }
 
@@ -480,6 +581,72 @@ private fun GlobalOptionsSection(state: AppState, viewModel: AppViewModel, p: Pa
 }
 
 @Composable
+private fun QuickDownloadSection(
+    state: AppState,
+    viewModel: AppViewModel,
+    p: Palette,
+    s: UiStrings,
+    modifier: Modifier = Modifier
+) {
+    val settings = state.settings
+    val qualityOptions = QuickQualityProfile.entries
+    val playlistModeOptions = PlaylistMode.entries
+
+    Column(
+        modifier = Modifier
+            .then(modifier)
+            .fillMaxWidth()
+            .padding(4.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(s.quickQuality, color = p.textMain)
+            SettingDropdown(
+                current = settings.quickQualityProfile,
+                options = qualityOptions,
+                label = ::quickQualityLabel,
+                onSelect = { viewModel.onSettingsChange(settings.copy(quickQualityProfile = it)) },
+                width = 200.dp,
+                p = p
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(s.quickPlaylistMode, color = p.textMain)
+            SettingDropdown(
+                current = settings.quickPlaylistMode,
+                options = playlistModeOptions,
+                label = { if (it == PlaylistMode.PLAYLIST) s.playlistAll else s.singleOnly },
+                onSelect = { viewModel.onSettingsChange(settings.copy(quickPlaylistMode = it)) },
+                width = 200.dp,
+                p = p
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Checkbox(
+                checked = settings.quickDownloadOnPaste,
+                onCheckedChange = { viewModel.onSettingsChange(settings.copy(quickDownloadOnPaste = it)) }
+            )
+            Text(s.quickDownloadOnPaste, color = p.textMain)
+        }
+
+    }
+}
+
+@Composable
 private fun <T> SettingDropdown(
     current: T,
     options: List<T>,
@@ -604,6 +771,27 @@ private fun BottomActionBar(state: AppState, viewModel: AppViewModel, p: Palette
 }
 
 @Composable
+private fun QuickBottomActionBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiStrings) {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(p.panel, RoundedCornerShape(10.dp)).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End
+    ) {
+        Button(
+            onClick = { viewModel.cancelDownload() },
+            enabled = state.isDownloading,
+            colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF8E2A2A), contentColor = Color.White)
+        ) { Text(s.cancel) }
+        Spacer(Modifier.width(8.dp))
+        Button(
+            onClick = { viewModel.quickDownload() },
+            enabled = !state.isDownloading && !state.isAnalyzing && state.toolsReady && state.url.isNotBlank(),
+            colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF4CAF50), contentColor = Color.White)
+        ) { Text(s.quickDownload) }
+    }
+}
+
+@Composable
 private fun ProgressSection(state: AppState, p: Palette, s: UiStrings) {
     val waitingDownloadProgress = state.isDownloading && state.progress.percent == null
     val animateStatusText = state.isAnalyzing || waitingDownloadProgress
@@ -691,4 +879,13 @@ private fun themeModeLabel(themeMode: ThemeMode): String = when (themeMode) {
     ThemeMode.SYSTEM -> "SYSTEM"
     ThemeMode.DARK -> "DARK"
     ThemeMode.LIGHT -> "LIGHT"
+}
+
+private fun quickQualityLabel(profile: QuickQualityProfile): String = when (profile) {
+    QuickQualityProfile.BEST -> "Best available"
+    QuickQualityProfile.UP_TO_2160P -> "Up to 2160p"
+    QuickQualityProfile.UP_TO_1440P -> "Up to 1440p"
+    QuickQualityProfile.UP_TO_1080P -> "Up to 1080p"
+    QuickQualityProfile.UP_TO_720P -> "Up to 720p"
+    QuickQualityProfile.AUDIO_ONLY -> "Audio only"
 }

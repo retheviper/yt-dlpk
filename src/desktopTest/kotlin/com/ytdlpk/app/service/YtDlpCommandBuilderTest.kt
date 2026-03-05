@@ -135,6 +135,31 @@ class YtDlpCommandBuilderTest : StringSpec({
         )
     }
 
+    "uses quick format selector when provided" {
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options().copy(quickFormatSelector = "bestvideo[height<=1080]+bestaudio/best")
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "bestvideo[height<=1080]+bestaudio/best"
+    }
+
+    "quick format selector overrides selected format" {
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(
+                selectedFormatTab = FormatKind.VIDEO_AUDIO,
+                selectedFormat = format("137", FormatKind.VIDEO_ONLY)
+            ).copy(quickFormatSelector = "bestaudio/best")
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "bestaudio/best"
+    }
+
     "rejects blank output directory" {
         shouldThrow<IllegalArgumentException> {
             builder.build("yt-dlp", "ffmpeg", options(outputDirectory = " "))

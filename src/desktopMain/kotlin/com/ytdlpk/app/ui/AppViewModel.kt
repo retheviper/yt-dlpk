@@ -6,6 +6,7 @@ import com.ytdlpk.app.model.DownloadOptions
 import com.ytdlpk.app.model.FormatEntry
 import com.ytdlpk.app.model.FormatKind
 import com.ytdlpk.app.model.PlaylistMode
+import com.ytdlpk.app.model.QuickQualityProfile
 import com.ytdlpk.app.model.ToolPaths
 import com.ytdlpk.app.service.RunningProcess
 import com.ytdlpk.app.service.SettingsRepository
@@ -247,6 +248,62 @@ class AppViewModel(
         )
     }
 
+    fun quickDownload(urlOverride: String? = null) {
+        val snapshot = state.value
+        val toolPaths = tools ?: return
+        val effectiveUrl = (urlOverride ?: snapshot.url).trim()
+        if (snapshot.isDownloading || effectiveUrl.isBlank()) return
+
+        if (urlOverride != null && snapshot.url != effectiveUrl) {
+            update { it.copy(url = effectiveUrl) }
+        }
+
+        val options = DownloadOptions(
+            url = effectiveUrl,
+            playlistMode = snapshot.settings.quickPlaylistMode,
+            selectedFormatTab = FormatKind.VIDEO_AUDIO,
+            outputDirectory = snapshot.settings.outputDirectory,
+            fileNameTemplate = snapshot.settings.fileNameTemplate,
+            selectedFormat = null,
+            selectedVideoOnlyFormat = null,
+            selectedAudioOnlyFormat = null,
+            quickFormatSelector = quickFormatSelector(snapshot.settings.quickQualityProfile),
+            includeAutoSubs = snapshot.settings.includeAutoSubs,
+            subLang = snapshot.settings.subLang,
+            extractAudio = snapshot.settings.extractAudio,
+            audioFormat = snapshot.settings.audioFormat,
+            mergeOutputFormat = snapshot.settings.mergeOutputFormat
+        )
+
+        update {
+            it.copy(
+                isDownloading = true,
+                lastError = null,
+                progress = it.progress.copy(percent = null, speed = null, eta = null, currentFile = null)
+            )
+        }
+
+        runningProcess = ytDlpService.startDownload(
+            scope = scope,
+            ytDlpPath = toolPaths.ytDlpPath,
+            ffmpegPath = toolPaths.ffmpegPath,
+            options = options,
+            onStdoutLine = { addLog(it) },
+            onStderrLine = { addLog("[err] $it") },
+            onProgress = { progress -> update { it.copy(progress = progress) } },
+            onExit = { code ->
+                update {
+                    it.copy(
+                        isDownloading = false,
+                        progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
+                        logs = (it.logs + "Quick download finished with code $code").takeLast(400),
+                        lastError = if (code == 0) null else "Quick download failed: exit code $code"
+                    )
+                }
+            }
+        )
+    }
+
     fun cancelDownload() {
         runningProcess?.cancel()
         runningProcess = null
@@ -319,5 +376,14 @@ class AppViewModel(
                 ?.formatId
             else -> candidates.maxByOrNull { formatSortScore(it) }?.formatId
         }
+    }
+
+    private fun quickFormatSelector(profile: QuickQualityProfile): String = when (profile) {
+        QuickQualityProfile.BEST -> "bestvideo*+bestaudio/best"
+        QuickQualityProfile.UP_TO_2160P -> "bestvideo*[height<=2160]+bestaudio/best[height<=2160]/best"
+        QuickQualityProfile.UP_TO_1440P -> "bestvideo*[height<=1440]+bestaudio/best[height<=1440]/best"
+        QuickQualityProfile.UP_TO_1080P -> "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best"
+        QuickQualityProfile.UP_TO_720P -> "bestvideo*[height<=720]+bestaudio/best[height<=720]/best"
+        QuickQualityProfile.AUDIO_ONLY -> "bestaudio/best"
     }
 }

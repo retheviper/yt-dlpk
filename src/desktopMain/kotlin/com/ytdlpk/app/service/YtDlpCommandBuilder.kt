@@ -26,14 +26,17 @@ class YtDlpCommandBuilder(
             cmd += "--no-playlist"
         }
 
-        options.selectedFormat?.let { selected ->
-            val selector = formatService.buildFormatSelector(
-                selected = selected,
-                selectedTab = options.selectedFormatTab,
-                pairedVideoOnly = options.selectedVideoOnlyFormat,
-                pairedAudioOnly = options.selectedAudioOnlyFormat
-            )
-            cmd += listOf("-f", selector)
+        val formatSelector = options.quickFormatSelector
+            ?: options.selectedFormat?.let { selected ->
+                formatService.buildFormatSelector(
+                    selected = selected,
+                    selectedTab = options.selectedFormatTab,
+                    pairedVideoOnly = options.selectedVideoOnlyFormat,
+                    pairedAudioOnly = options.selectedAudioOnlyFormat
+                )
+            }
+        formatSelector?.let {
+            cmd += listOf("-f", it)
         }
 
         if (options.extractAudio) {

@@ -48,9 +48,46 @@ data class FormatEntry(
     val rawText: String
 )
 
+@Serializable
 enum class PlaylistMode {
+    @SerialName("PLAYLIST")
     PLAYLIST,
+
+    @SerialName("SINGLE")
     SINGLE
+}
+
+@Serializable
+enum class QuickQualityProfile {
+    @SerialName("BEST")
+    BEST,
+
+    @SerialName("UP_TO_2160P")
+    UP_TO_2160P,
+
+    @SerialName("UP_TO_1440P")
+    UP_TO_1440P,
+
+    @SerialName("UP_TO_1080P")
+    UP_TO_1080P,
+
+    @SerialName("UP_TO_720P")
+    UP_TO_720P,
+
+    @SerialName("AUDIO_ONLY")
+    AUDIO_ONLY
+}
+
+@Serializable
+enum class HomeTab {
+    @SerialName("STANDARD")
+    STANDARD,
+
+    @SerialName("QUICK")
+    QUICK,
+
+    @SerialName("SETTINGS")
+    SETTINGS
 }
 
 data class VideoMetadata(
@@ -80,6 +117,10 @@ data class AppSettings(
     val extractAudio: Boolean = false,
     val audioFormat: String = "mp3",
     val mergeOutputFormat: String = "mp4",
+    val quickQualityProfile: QuickQualityProfile = QuickQualityProfile.UP_TO_1080P,
+    val quickPlaylistMode: PlaylistMode = PlaylistMode.PLAYLIST,
+    val quickDownloadOnPaste: Boolean = false,
+    val homeTab: HomeTab = HomeTab.STANDARD,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val language: AppLanguage = AppLanguage.ENGLISH
 )
@@ -100,6 +141,7 @@ data class DownloadOptions(
     val selectedFormat: FormatEntry?,
     val selectedVideoOnlyFormat: FormatEntry?,
     val selectedAudioOnlyFormat: FormatEntry?,
+    val quickFormatSelector: String? = null,
     val includeAutoSubs: Boolean,
     val subLang: String,
     val extractAudio: Boolean,
