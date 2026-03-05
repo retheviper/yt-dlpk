@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -663,11 +665,21 @@ private fun QuickDownloadSection(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Checkbox(
-                checked = settings.quickDownloadOnPaste,
-                onCheckedChange = { viewModel.onSettingsChange(settings.copy(quickDownloadOnPaste = it)) }
-            )
-            Text(s.quickDownloadOnPaste, color = p.textMain)
+            Row(
+                modifier = Modifier.toggleable(
+                    value = settings.quickDownloadOnPaste,
+                    role = Role.Checkbox,
+                    onValueChange = { viewModel.onSettingsChange(settings.copy(quickDownloadOnPaste = it)) }
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Checkbox(
+                    checked = settings.quickDownloadOnPaste,
+                    onCheckedChange = null
+                )
+                Text(s.quickDownloadOnPaste, color = p.textMain)
+            }
         }
 
     }
