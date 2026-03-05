@@ -643,9 +643,8 @@ private fun formatBitrate(entry: FormatEntry): String {
 }
 
 private fun formatSelectionLabel(entry: FormatEntry): String {
-    val resolution = entry.resolution ?: "-"
     val bitrate = formatBitrate(entry)
-    return "${entry.formatId} | ${entry.ext} | $resolution | $bitrate"
+    return "${entry.ext} | $bitrate"
 }
 
 @Composable
