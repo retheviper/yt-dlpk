@@ -47,6 +47,15 @@ compose.desktop {
             vendor = "yt-dlpk"
             description = "yt-dlp GUI desktop app built with Kotlin + Compose"
             modules("java.sql")
+            macOS {
+                iconFile.set(project.file("src/desktopMain/resources/icons/icon.icns"))
+            }
+            windows {
+                iconFile.set(project.file("src/desktopMain/resources/icons/icon.ico"))
+            }
+            linux {
+                iconFile.set(project.file("src/desktopMain/resources/icons/icon.png"))
+            }
         }
     }
 }

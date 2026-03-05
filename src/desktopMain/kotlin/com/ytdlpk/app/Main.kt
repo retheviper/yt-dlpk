@@ -3,6 +3,7 @@ package com.ytdlpk.app
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -51,7 +52,8 @@ fun main() = application {
     Window(
         onCloseRequest = ::exitApplication,
         title = "yt-dlpk",
-        state = windowState
+        state = windowState,
+        icon = painterResource("icons/icon.png")
     ) {
         val state by viewModel.state.collectAsState()
         LaunchedEffect(Unit) {
