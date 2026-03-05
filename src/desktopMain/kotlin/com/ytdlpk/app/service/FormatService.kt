@@ -86,10 +86,31 @@ class FormatService(
         return entries
     }
 
-    fun buildFormatSelector(selected: FormatEntry, mergeBestAudio: Boolean): String {
+    fun buildFormatSelector(
+        selected: FormatEntry,
+        selectedTab: FormatKind,
+        pairedVideoOnly: FormatEntry? = null,
+        pairedAudioOnly: FormatEntry? = null
+    ): String {
         return when (selected.kind) {
             FormatKind.VIDEO_ONLY -> {
-                if (mergeBestAudio) "${selected.formatId}+bestaudio/best" else selected.formatId
+                when (selectedTab) {
+                    FormatKind.VIDEO_ONLY -> selected.formatId
+                    else -> when {
+                        pairedAudioOnly?.kind == FormatKind.AUDIO_ONLY -> "${selected.formatId}+${pairedAudioOnly.formatId}"
+                        else -> "${selected.formatId}+bestaudio/best"
+                    }
+                }
+            }
+            FormatKind.AUDIO_ONLY -> {
+                when (selectedTab) {
+                    FormatKind.AUDIO_ONLY -> selected.formatId
+                    else -> if (pairedVideoOnly?.kind == FormatKind.VIDEO_ONLY) {
+                        "${pairedVideoOnly.formatId}+${selected.formatId}"
+                    } else {
+                        selected.formatId
+                    }
+                }
             }
             else -> selected.formatId
         }

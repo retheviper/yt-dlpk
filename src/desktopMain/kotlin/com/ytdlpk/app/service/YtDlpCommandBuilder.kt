@@ -27,7 +27,12 @@ class YtDlpCommandBuilder(
         }
 
         options.selectedFormat?.let { selected ->
-            val selector = formatService.buildFormatSelector(selected, options.mergeBestAudioForVideoOnly)
+            val selector = formatService.buildFormatSelector(
+                selected = selected,
+                selectedTab = options.selectedFormatTab,
+                pairedVideoOnly = options.selectedVideoOnlyFormat,
+                pairedAudioOnly = options.selectedAudioOnlyFormat
+            )
             cmd += listOf("-f", selector)
         }
 

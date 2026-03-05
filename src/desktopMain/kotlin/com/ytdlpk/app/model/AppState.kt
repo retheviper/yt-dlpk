@@ -8,6 +8,8 @@ data class AppState(
     val formats: List<FormatEntry> = emptyList(),
     val selectedFormatTab: FormatKind = FormatKind.VIDEO_AUDIO,
     val selectedFormatId: String? = null,
+    val selectedVideoOnlyFormatId: String? = null,
+    val selectedAudioOnlyFormatId: String? = null,
     val playlistMode: PlaylistMode = PlaylistMode.PLAYLIST,
     val settings: AppSettings = AppSettings(),
     val progress: ProgressInfo = ProgressInfo(
@@ -32,10 +34,16 @@ data class AppState(
     val selectedFormat: FormatEntry?
         get() = formats.firstOrNull { it.formatId == selectedFormatId }
 
+    val selectedVideoOnlyFormat: FormatEntry?
+        get() = formats.firstOrNull { it.formatId == selectedVideoOnlyFormatId }
+
+    val selectedAudioOnlyFormat: FormatEntry?
+        get() = formats.firstOrNull { it.formatId == selectedAudioOnlyFormatId }
+
     val filteredFormats: List<FormatEntry>
         get() = formats.filter { entry ->
             when (selectedFormatTab) {
-                FormatKind.VIDEO_AUDIO -> entry.kind == FormatKind.VIDEO_AUDIO
+                FormatKind.VIDEO_AUDIO -> entry.kind == FormatKind.VIDEO_AUDIO || entry.kind == FormatKind.VIDEO_ONLY
                 FormatKind.VIDEO_ONLY -> entry.kind == FormatKind.VIDEO_ONLY
                 FormatKind.AUDIO_ONLY -> entry.kind == FormatKind.AUDIO_ONLY
                 FormatKind.UNKNOWN -> true

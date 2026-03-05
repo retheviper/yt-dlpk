@@ -49,13 +49,34 @@ class AppViewModel(
     fun onUrlChange(url: String) = update { it.copy(url = url) }
 
     fun onTabChange(kind: FormatKind) = update { state ->
+        val tabSelection = when (kind) {
+            FormatKind.VIDEO_ONLY -> state.selectedVideoOnlyFormatId ?: pickBestFormatId(state.formats, kind)
+            FormatKind.AUDIO_ONLY -> state.selectedAudioOnlyFormatId ?: pickBestFormatId(state.formats, kind)
+            else -> pickBestFormatId(state.formats, kind)
+        }
         state.copy(
             selectedFormatTab = kind,
-            selectedFormatId = pickBestFormatId(state.formats, kind)
+            selectedFormatId = tabSelection
         )
     }
 
-    fun onFormatSelected(formatId: String) = update { it.copy(selectedFormatId = formatId) }
+    fun onFormatSelected(formatId: String) = update { state ->
+        when (state.selectedFormatTab) {
+            FormatKind.VIDEO_ONLY -> state.copy(
+                selectedFormatId = formatId,
+                selectedVideoOnlyFormatId = formatId
+            )
+            FormatKind.AUDIO_ONLY -> state.copy(
+                selectedFormatId = formatId,
+                selectedAudioOnlyFormatId = formatId
+            )
+            else -> state.copy(selectedFormatId = formatId)
+        }
+    }
+
+    fun onAudioOnlyFormatSelected(formatId: String) = update {
+        it.copy(selectedAudioOnlyFormatId = formatId)
+    }
 
     fun onPlaylistMode(mode: PlaylistMode) = update { it.copy(playlistMode = mode) }
 
@@ -147,12 +168,16 @@ class AppViewModel(
                     else -> FormatKind.VIDEO_AUDIO
                 }
                 val selected = pickBestFormatId(formats, defaultTab)
+                val selectedVideoOnly = pickBestFormatId(formats, FormatKind.VIDEO_ONLY)
+                val selectedAudioOnly = pickBestFormatId(formats, FormatKind.AUDIO_ONLY)
                 update {
                     it.copy(
                         metadata = metadata,
                         formats = formats,
                         selectedFormatTab = defaultTab,
                         selectedFormatId = selected,
+                        selectedVideoOnlyFormatId = selectedVideoOnly,
+                        selectedAudioOnlyFormatId = selectedAudioOnly,
                         logs = (it.logs + "Analyze complete: ${formats.size} formats").takeLast(400)
                     )
                 }
@@ -177,10 +202,12 @@ class AppViewModel(
         val options = DownloadOptions(
             url = snapshot.url,
             playlistMode = snapshot.playlistMode,
+            selectedFormatTab = snapshot.selectedFormatTab,
             outputDirectory = snapshot.settings.outputDirectory,
             fileNameTemplate = snapshot.settings.fileNameTemplate,
             selectedFormat = snapshot.selectedFormat,
-            mergeBestAudioForVideoOnly = snapshot.settings.mergeBestAudioForVideoOnly,
+            selectedVideoOnlyFormat = snapshot.selectedVideoOnlyFormat,
+            selectedAudioOnlyFormat = snapshot.selectedAudioOnlyFormat,
             includeAutoSubs = snapshot.settings.includeAutoSubs,
             subLang = snapshot.settings.subLang,
             extractAudio = snapshot.settings.extractAudio,
@@ -272,7 +299,10 @@ class AppViewModel(
     }
 
     private fun pickBestFormatId(formats: List<FormatEntry>, kind: FormatKind): String? {
-        val candidates = formats.filter { it.kind == kind }
+        val candidates = when (kind) {
+            FormatKind.VIDEO_AUDIO -> formats.filter { it.kind == FormatKind.VIDEO_AUDIO || it.kind == FormatKind.VIDEO_ONLY }
+            else -> formats.filter { it.kind == kind }
+        }
         if (candidates.isEmpty()) return formats.firstOrNull()?.formatId
         return when (kind) {
             FormatKind.VIDEO_AUDIO -> candidates

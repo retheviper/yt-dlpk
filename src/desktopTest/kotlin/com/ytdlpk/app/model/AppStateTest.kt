@@ -35,10 +35,21 @@ class AppStateTest : StringSpec({
         state.selectedFormat?.formatId shouldBe "137"
     }
 
+    "selected video/audio helpers resolve by dedicated ids" {
+        val state = AppState(
+            formats = allFormats,
+            selectedVideoOnlyFormatId = "137",
+            selectedAudioOnlyFormatId = "140"
+        )
+
+        state.selectedVideoOnlyFormat?.formatId shouldBe "137"
+        state.selectedAudioOnlyFormat?.formatId shouldBe "140"
+    }
+
     "filteredFormats returns only matching tab entries" {
         AppState(formats = allFormats, selectedFormatTab = FormatKind.VIDEO_AUDIO)
             .filteredFormats
-            .map { it.formatId } shouldContainExactly listOf("18")
+            .map { it.formatId } shouldContainExactly listOf("18", "137")
 
         AppState(formats = allFormats, selectedFormatTab = FormatKind.VIDEO_ONLY)
             .filteredFormats

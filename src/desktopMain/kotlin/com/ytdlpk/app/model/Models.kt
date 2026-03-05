@@ -80,7 +80,6 @@ data class AppSettings(
     val extractAudio: Boolean = false,
     val audioFormat: String = "mp3",
     val mergeOutputFormat: String = "mp4",
-    val mergeBestAudioForVideoOnly: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val language: AppLanguage = AppLanguage.ENGLISH
 )
@@ -95,10 +94,12 @@ data class ToolPaths(
 data class DownloadOptions(
     val url: String,
     val playlistMode: PlaylistMode,
+    val selectedFormatTab: FormatKind,
     val outputDirectory: String,
     val fileNameTemplate: String,
     val selectedFormat: FormatEntry?,
-    val mergeBestAudioForVideoOnly: Boolean,
+    val selectedVideoOnlyFormat: FormatEntry?,
+    val selectedAudioOnlyFormat: FormatEntry?,
     val includeAutoSubs: Boolean,
     val subLang: String,
     val extractAudio: Boolean,

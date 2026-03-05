@@ -248,6 +248,31 @@ private fun FormatSection(state: AppState, viewModel: AppViewModel, p: Palette, 
         }
     }
 
+    val audioOnlyFormats = state.formats
+        .filter { it.kind == FormatKind.AUDIO_ONLY }
+        .sortedByDescending { formatSortScore(it) }
+
+    val selectedEntry = state.selectedFormat
+    if (
+        state.selectedFormatTab == FormatKind.VIDEO_AUDIO &&
+        selectedEntry?.kind == FormatKind.VIDEO_ONLY &&
+        audioOnlyFormats.isNotEmpty()
+    ) {
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(s.pairedAudio, color = p.textMain)
+            val current = state.selectedAudioOnlyFormat ?: audioOnlyFormats.first()
+            SettingDropdown(
+                current = current,
+                options = audioOnlyFormats,
+                onSelect = { viewModel.onAudioOnlyFormatSelected(it.formatId) },
+                width = 260.dp,
+                p = p,
+                label = ::formatSelectionLabel
+            )
+        }
+    }
+
     Spacer(Modifier.height(12.dp))
     val sortedFormats = state.filteredFormats.sortedByDescending { formatSortScore(it) }
     Box(
@@ -345,11 +370,6 @@ private fun OptionsSection(state: AppState, viewModel: AppViewModel, p: Palette,
                 unfocusedLabelColor = p.textSub
             )
         )
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = settings.mergeBestAudioForVideoOnly, onCheckedChange = { viewModel.onSettingsChange(settings.copy(mergeBestAudioForVideoOnly = it)) })
-            Text(s.mergeBestAudio, color = p.textMain)
-        }
 
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Checkbox(checked = settings.extractAudio, onCheckedChange = { viewModel.onSettingsChange(settings.copy(extractAudio = it)) })
@@ -620,6 +640,12 @@ private fun formatBitrate(entry: FormatEntry): String {
     return entry.tbrKbps?.let { "${it.toInt()} kbps" }
         ?: entry.abrKbps?.let { "${it.toInt()} kbps" }
         ?: "-"
+}
+
+private fun formatSelectionLabel(entry: FormatEntry): String {
+    val resolution = entry.resolution ?: "-"
+    val bitrate = formatBitrate(entry)
+    return "${entry.formatId} | ${entry.ext} | $resolution | $bitrate"
 }
 
 @Composable

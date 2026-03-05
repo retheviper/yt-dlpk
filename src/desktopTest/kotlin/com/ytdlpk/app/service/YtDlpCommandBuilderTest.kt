@@ -15,8 +15,8 @@ class YtDlpCommandBuilderTest : StringSpec({
 
     fun options(
         playlistMode: PlaylistMode = PlaylistMode.PLAYLIST,
+        selectedFormatTab: FormatKind = FormatKind.VIDEO_AUDIO,
         selectedFormat: FormatEntry? = null,
-        mergeBestAudioForVideoOnly: Boolean = true,
         includeAutoSubs: Boolean = false,
         extractAudio: Boolean = false,
         outputDirectory: String = "/downloads",
@@ -24,10 +24,12 @@ class YtDlpCommandBuilderTest : StringSpec({
     ) = DownloadOptions(
         url = "https://example.com/watch?v=abc",
         playlistMode = playlistMode,
+        selectedFormatTab = selectedFormatTab,
         outputDirectory = outputDirectory,
         fileNameTemplate = fileNameTemplate,
         selectedFormat = selectedFormat,
-        mergeBestAudioForVideoOnly = mergeBestAudioForVideoOnly,
+        selectedVideoOnlyFormat = null,
+        selectedAudioOnlyFormat = null,
         includeAutoSubs = includeAutoSubs,
         subLang = "en.*",
         extractAudio = extractAudio,
@@ -59,22 +61,60 @@ class YtDlpCommandBuilderTest : StringSpec({
         val command = builder.build(
             "yt-dlp",
             "ffmpeg",
-            options(selectedFormat = format("137", FormatKind.VIDEO_ONLY), mergeBestAudioForVideoOnly = true)
+            options(
+                selectedFormatTab = FormatKind.VIDEO_AUDIO,
+                selectedFormat = format("137", FormatKind.VIDEO_ONLY)
+            )
         )
 
         val fIndex = command.indexOf("-f")
         command[fIndex + 1] shouldBe "137+bestaudio/best"
     }
 
-    "builds selector without merge for video-only format when disabled" {
+    "builds selector without audio merge in video-only tab" {
         val command = builder.build(
             "yt-dlp",
             "ffmpeg",
-            options(selectedFormat = format("137", FormatKind.VIDEO_ONLY), mergeBestAudioForVideoOnly = false)
+            options(
+                selectedFormatTab = FormatKind.VIDEO_ONLY,
+                selectedFormat = format("137", FormatKind.VIDEO_ONLY)
+            )
         )
 
         val fIndex = command.indexOf("-f")
         command[fIndex + 1] shouldBe "137"
+    }
+
+    "builds selector with explicit video+audio pairing when both are selected" {
+        val video = format("137", FormatKind.VIDEO_ONLY)
+        val audio = format("251", FormatKind.AUDIO_ONLY)
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(selectedFormat = video).copy(
+                selectedVideoOnlyFormat = video,
+                selectedAudioOnlyFormat = audio
+            )
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "137+251"
+    }
+
+    "builds selector without video merge in audio-only tab" {
+        val video = format("137", FormatKind.VIDEO_ONLY)
+        val audio = format("251", FormatKind.AUDIO_ONLY)
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(
+                selectedFormatTab = FormatKind.AUDIO_ONLY,
+                selectedFormat = audio
+            ).copy(selectedVideoOnlyFormat = video)
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "251"
     }
 
     "adds extraction and subtitle flags when enabled" {
