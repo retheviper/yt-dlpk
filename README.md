@@ -3,10 +3,12 @@
 `yt-dlpk` is a desktop app that helps you save videos and audio with a simple flow.
 Paste a link, choose quality, and download.
 
+![yt-dlpk screenshot](./docs/screenshot.png)
+
 Language versions:
-- English: `README.md`
-- Japanese: `README.ja.md`
-- Korean: `README.ko.md`
+- [English](./README.md)
+- [Japanese](./README.ja.md)
+- [Korean](./README.ko.md)
 
 ## What You Can Do
 

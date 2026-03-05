@@ -3,10 +3,12 @@
 `yt-dlpk`는 영상/오디오를 쉽게 저장할 수 있게 도와주는 데스크톱 앱입니다.
 링크를 붙여 넣고, 원하는 품질을 고른 뒤, 저장하면 끝나는 흐름에 집중했습니다.
 
+![yt-dlpk 스크린샷](./docs/screenshot.png)
+
 언어별 README:
-- 영어: `README.md`
-- 일본어: `README.ja.md`
-- 한국어: `README.ko.md`
+- [영어](./README.md)
+- [일본어](./README.ja.md)
+- [한국어](./README.ko.md)
 
 ## 앱에서 할 수 있는 일
 
