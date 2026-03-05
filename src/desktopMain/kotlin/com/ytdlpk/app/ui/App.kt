@@ -49,7 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -69,7 +69,7 @@ import kotlinx.coroutines.withContext
 import org.jetbrains.skia.Image as SkiaImage
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
-import java.net.URL
+import java.net.URI
 
 data class Palette(
     val bg: Color,
@@ -655,8 +655,8 @@ private fun rememberThumbnailImage(url: String?): ImageBitmap? {
         if (url.isNullOrBlank()) return@produceState
         value = runCatching {
             withContext(Dispatchers.IO) {
-                URL(url).openStream().use { input ->
-                    SkiaImage.makeFromEncoded(input.readBytes()).asImageBitmap()
+                URI.create(url).toURL().openStream().use { input ->
+                    SkiaImage.makeFromEncoded(input.readBytes()).toComposeImageBitmap()
                 }
             }
         }.getOrNull()

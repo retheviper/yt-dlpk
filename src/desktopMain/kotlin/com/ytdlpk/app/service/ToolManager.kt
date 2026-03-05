@@ -13,7 +13,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.BufferedInputStream
 import java.io.FileInputStream
-import java.net.URL
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -61,7 +61,7 @@ class ToolManager(
     suspend fun getLatestYtDlpVersion(): String = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
         runCatching {
-            val json = URL(url).openStream().bufferedReader().use { it.readText() }
+            val json = readTextFromUrl(url)
             Json.parseToJsonElement(json).jsonObject["tag_name"]?.jsonPrimitive?.content ?: "-"
         }.getOrDefault("-")
     }
@@ -69,7 +69,7 @@ class ToolManager(
     suspend fun getLatestFfmpegVersion(): String = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
         runCatching {
-            val json = URL(url).openStream().bufferedReader().use { it.readText() }
+            val json = readTextFromUrl(url)
             Json.parseToJsonElement(json).jsonObject["tag_name"]?.jsonPrimitive?.content ?: "-"
         }.getOrDefault("-")
     }
@@ -156,7 +156,7 @@ class ToolManager(
         val errors = mutableListOf<String>()
         for (url in urls) {
             runCatching {
-                URL(url).openStream().use { input ->
+                URI.create(url).toURL().openStream().use { input ->
                     target.outputStream().use { output ->
                         input.copyTo(output)
                     }
@@ -192,7 +192,7 @@ class ToolManager(
     private fun extractTarXz(archive: Path, destination: Path) {
         val destinationRoot = destination.toAbsolutePath().normalize()
         TarArchiveInputStream(XZCompressorInputStream(BufferedInputStream(FileInputStream(archive.toFile())))).use { tar ->
-            var entry: TarArchiveEntry? = tar.nextTarEntry
+            var entry: TarArchiveEntry? = tar.nextEntry as? TarArchiveEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
                     val out = destinationRoot.resolve(entry.name).normalize()
@@ -202,7 +202,7 @@ class ToolManager(
                     out.parent?.createDirectories()
                     out.outputStream().use { output -> tar.copyTo(output) }
                 }
-                entry = tar.nextTarEntry
+                entry = tar.nextEntry as? TarArchiveEntry
             }
         }
     }
@@ -280,7 +280,7 @@ class ToolManager(
     private fun fetchLatestBtbnAssetUrl(os: String, arch: String): String? {
         val api = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
         return runCatching {
-            val json = URL(api).openStream().bufferedReader().use { it.readText() }
+            val json = readTextFromUrl(api)
             val assets = Json.parseToJsonElement(json).jsonObject["assets"]?.jsonArray ?: return null
             val suffix = when (os) {
                 "windows" -> if (arch == "arm64") "-winarm64-gpl.zip" else "-win64-gpl.zip"
@@ -297,6 +297,10 @@ class ToolManager(
                 .firstOrNull { (name, _) -> name.contains(suffix) }
                 ?.second
         }.getOrNull()
+    }
+
+    private fun readTextFromUrl(url: String): String {
+        return URI.create(url).toURL().openStream().bufferedReader().use { it.readText() }
     }
 
     private fun detectArch(): String {

@@ -90,8 +90,11 @@ class AppViewModel(
     fun checkLatestToolVersions() {
         scope.launch {
             update { it.copy(checkingLatestTools = true) }
-            val latestYt = toolManager.getLatestYtDlpVersion()
-            val latestFf = toolManager.getLatestFfmpegVersion()
+            val (latestYt, latestFf) = coroutineScope {
+                val latestYtDef = async { toolManager.getLatestYtDlpVersion() }
+                val latestFfDef = async { toolManager.getLatestFfmpegVersion() }
+                latestYtDef.await() to latestFfDef.await()
+            }
             update {
                 it.copy(
                     latestYtDlpVersion = latestYt,
@@ -306,14 +309,13 @@ class AppViewModel(
         if (candidates.isEmpty()) return formats.firstOrNull()?.formatId
         return when (kind) {
             FormatKind.VIDEO_AUDIO -> candidates
-                .sortedWith(
-                    compareByDescending<FormatEntry> { resolutionMaxSide(it.resolution) }
-                        .thenByDescending { resolutionMinSide(it.resolution) }
-                        .thenByDescending { parseResolutionScore(it.resolution) }
-                        .thenByDescending { it.tbrKbps ?: it.abrKbps ?: 0.0 }
-                        .thenByDescending { it.fps ?: 0 }
+                .maxWithOrNull(
+                    compareBy<FormatEntry> { resolutionMaxSide(it.resolution) }
+                        .thenBy { resolutionMinSide(it.resolution) }
+                        .thenBy { parseResolutionScore(it.resolution) }
+                        .thenBy { it.tbrKbps ?: it.abrKbps ?: 0.0 }
+                        .thenBy { it.fps ?: 0 }
                 )
-                .firstOrNull()
                 ?.formatId
             else -> candidates.maxByOrNull { formatSortScore(it) }?.formatId
         }
