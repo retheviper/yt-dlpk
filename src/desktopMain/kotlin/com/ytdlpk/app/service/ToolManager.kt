@@ -3,7 +3,6 @@ package com.ytdlpk.app.service
 import com.ytdlpk.app.model.ToolPaths
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -25,7 +24,6 @@ import kotlin.io.path.inputStream
 import kotlin.io.path.name
 import kotlin.io.path.outputStream
 
-@Serializable
 private data class ToolSources(
     val ytDlp: Map<String, String>,
     val ffmpeg: Map<String, String>
@@ -82,7 +80,7 @@ class ToolManager(
         binDir.createDirectories()
         val os = detectOs()
         val arch = detectArch()
-        val sources = Json.decodeFromString(ToolSources.serializer(), resourceLoader("tool-sources.json"))
+        val sources = parseToolSources(resourceLoader("tool-sources.json"))
 
         val ytDlpName = if (os == "windows") "yt-dlp.exe" else "yt-dlp"
         val ffmpegName = if (os == "windows") "ffmpeg.exe" else "ffmpeg"
@@ -301,6 +299,18 @@ class ToolManager(
 
     private fun readTextFromUrl(url: String): String {
         return URI.create(url).toURL().openStream().bufferedReader().use { it.readText() }
+    }
+
+    private fun parseToolSources(jsonText: String): ToolSources {
+        val root = Json.parseToJsonElement(jsonText).jsonObject
+        fun parseMap(key: String): Map<String, String> {
+            val obj = root[key]?.jsonObject ?: emptyMap()
+            return obj.mapValues { (_, value) -> value.jsonPrimitive.content }
+        }
+        return ToolSources(
+            ytDlp = parseMap("ytDlp"),
+            ffmpeg = parseMap("ffmpeg")
+        )
     }
 
     private fun detectArch(): String {

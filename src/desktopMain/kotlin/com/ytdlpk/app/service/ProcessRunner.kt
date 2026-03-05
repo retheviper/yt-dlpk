@@ -10,6 +10,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import java.util.stream.Collectors
 
 data class ProcessResult(
     val exitCode: Int,
@@ -19,10 +21,7 @@ data class ProcessResult(
 
 class RunningProcess(private val job: Job, private val process: Process) {
     fun cancel() {
-        process.destroy()
-        if (process.isAlive) {
-            process.destroyForcibly()
-        }
+        terminateProcessTree(process)
         job.cancel()
     }
 }
@@ -72,10 +71,7 @@ class ProcessRunner(
 
             ProcessResult(process.exitValue(), stdout, stderr)
         } catch (e: CancellationException) {
-            process.destroy()
-            if (process.isAlive) {
-                process.destroyForcibly()
-            }
+            terminateProcessTree(process)
             throw e
         }
     }
@@ -114,12 +110,45 @@ class ProcessRunner(
                 stderrJob.join()
                 withContext(scope.coroutineContext) { onExit(code) }
             } catch (_: CancellationException) {
-                process.destroy()
-                if (process.isAlive) {
-                    process.destroyForcibly()
-                }
+                terminateProcessTree(process)
             }
         }
         return RunningProcess(job, process)
+    }
+}
+
+private fun terminateProcessTree(process: Process) {
+    val root = process.toHandle()
+    val descendants = root.descendants().use { stream ->
+        stream.collect(Collectors.toList())
+    }
+    descendants.asReversed().forEach { killProcessHandle(it) }
+    killProcessHandle(root)
+}
+
+private fun killProcessHandle(handle: ProcessHandle) {
+    if (!handle.isAlive) return
+
+    runCatching {
+        handle.destroy()
+        handle.onExit().toCompletableFuture().get(800, TimeUnit.MILLISECONDS)
+    }
+
+    if (!handle.isAlive) return
+
+    runCatching {
+        handle.destroyForcibly()
+        handle.onExit().toCompletableFuture().get(1500, TimeUnit.MILLISECONDS)
+    }
+
+    if (!handle.isAlive) return
+
+    if (System.getProperty("os.name").lowercase().contains("win")) {
+        runCatching {
+            ProcessBuilder("taskkill", "/PID", handle.pid().toString(), "/T", "/F")
+                .redirectErrorStream(true)
+                .start()
+                .waitFor(3, TimeUnit.SECONDS)
+        }
     }
 }

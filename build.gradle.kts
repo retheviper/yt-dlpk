@@ -34,6 +34,10 @@ tasks.withType<Test>().configureEach {
 compose.desktop {
     application {
         mainClass = "com.ytdlpk.app.MainKt"
+        buildTypes.release.proguard {
+            isEnabled.set(true)
+            configurationFiles.from(project.file("proguard-rules.pro"))
+        }
 
         nativeDistributions {
             targetFormats(
@@ -52,6 +56,9 @@ compose.desktop {
             }
             windows {
                 iconFile.set(project.file("src/desktopMain/resources/icons/icon.ico"))
+                menu = true
+                shortcut = true
+                menuGroup = "yt-dlpk"
             }
             linux {
                 iconFile.set(project.file("src/desktopMain/resources/icons/icon.png"))
