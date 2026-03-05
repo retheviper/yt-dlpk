@@ -345,15 +345,30 @@ private fun OptionsSection(state: AppState, viewModel: AppViewModel, p: Palette,
     val mergeFormatOptions = listOf("mp4", "mkv", "webm", "mov")
 
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(s.saveLocation, color = p.textMain)
-            Spacer(Modifier.weight(1f))
+        Text(s.saveLocation, color = p.textMain)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = settings.outputDirectory,
+                onValueChange = { viewModel.onSettingsChange(settings.copy(outputDirectory = it)) },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                colors = TextFieldDefaults.outlinedTextFieldColors(
+                    textColor = p.textMain,
+                    backgroundColor = p.panelSoft,
+                    cursorColor = p.accent,
+                    focusedBorderColor = p.accent,
+                    unfocusedBorderColor = p.textSub.copy(alpha = 0.6f)
+                )
+            )
             Button(
                 onClick = { pickDirectory(settings.outputDirectory)?.let { viewModel.onSettingsChange(settings.copy(outputDirectory = it)) } },
                 colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)
             ) { Text(s.browse) }
         }
-        Text(settings.outputDirectory, color = p.textSub)
 
         OutlinedTextField(
             value = settings.fileNameTemplate,
