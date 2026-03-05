@@ -15,7 +15,10 @@ import java.io.FileInputStream
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFilePermission
+import java.util.Comparator
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 import kotlin.io.path.createDirectories
@@ -23,16 +26,24 @@ import kotlin.io.path.exists
 import kotlin.io.path.inputStream
 import kotlin.io.path.name
 import kotlin.io.path.outputStream
+import kotlin.io.path.writeBytes
 
 private data class ToolSources(
     val ytDlp: Map<String, String>,
     val ffmpeg: Map<String, String>
 )
 
+private data class ExecProbe(
+    val ok: Boolean,
+    val details: String
+)
+
 class ToolManager(
     private val appHome: Path,
     private val resourceLoader: (String) -> String
 ) {
+    private val toolProbeTimeoutSeconds = 60L
+
     private val toolsRoot = appHome.resolve("tools")
     private val binDir = toolsRoot.resolve("bin")
 
@@ -95,9 +106,7 @@ class ToolManager(
         } ?: run {
             onStatus("Downloading yt-dlp...")
             val ytDlpCandidates = buildYtDlpCandidates(os, sources)
-            downloadBinary(ytDlpCandidates, ytDlpPath)
-            ytDlpPath.toFile().setExecutable(true)
-            requireExecutable(ytDlpPath, "--version")
+            downloadExecutableBinary(ytDlpCandidates, ytDlpPath, "--version", os)
             ytDlpPath
         }
 
@@ -119,7 +128,7 @@ class ToolManager(
             val found = findBinary(toolsRoot, ffmpegName)
                 ?: error("ffmpeg binary not found after extraction")
             Files.copy(found, ffmpegPath, StandardCopyOption.REPLACE_EXISTING)
-            ffmpegPath.toFile().setExecutable(true)
+            makeExecutable(ffmpegPath, os)
             requireExecutable(ffmpegPath, "-version")
             ffmpegPath
         }
@@ -137,7 +146,7 @@ class ToolManager(
             val process = ProcessBuilder(binaryPath, arg)
                 .redirectErrorStream(true)
                 .start()
-            val finished = process.waitFor(8, TimeUnit.SECONDS)
+            val finished = process.waitFor(toolProbeTimeoutSeconds, TimeUnit.SECONDS)
             if (!finished) {
                 process.destroyForcibly()
                 process.waitFor(2, TimeUnit.SECONDS)
@@ -166,6 +175,80 @@ class ToolManager(
             }
         }
         error("Failed to download from all candidates:\n${errors.joinToString("\n")}")
+    }
+
+    private fun downloadExecutableBinary(urls: List<String>, target: Path, checkArg: String, os: String) {
+        target.parent.createDirectories()
+        val errors = mutableListOf<String>()
+        val temp = target.resolveSibling("${target.fileName}.download.bin")
+        val payload = target.resolveSibling("${target.fileName}.download.payload")
+        for (url in urls) {
+            runCatching {
+                Files.deleteIfExists(temp)
+                Files.deleteIfExists(payload)
+                URI.create(url).toURL().openStream().use { input ->
+                    payload.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (url.endsWith(".zip") && os == "mac") {
+                    installMacYtDlpFromZip(payload, target)
+                    val probe = probeExecutable(target, checkArg)
+                    check(probe.ok) { "downloaded file failed executable check: ${probe.details}" }
+                    return
+                } else if (url.endsWith(".zip")) {
+                    extractBinaryFromZip(payload, temp, target.fileName.toString())
+                } else {
+                    Files.copy(payload, temp, StandardCopyOption.REPLACE_EXISTING)
+                }
+                makeExecutable(temp, os)
+                val probe = probeExecutable(temp, checkArg)
+                check(probe.ok) { "downloaded file failed executable check: ${probe.details}" }
+                runCatching {
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, ATOMIC_MOVE)
+                }.getOrElse {
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
+                }
+            }.onSuccess {
+                return
+            }.onFailure { e ->
+                errors += "$url -> ${e.message}"
+            }.also {
+                runCatching { Files.deleteIfExists(temp) }
+                runCatching { Files.deleteIfExists(payload) }
+            }
+        }
+        error("Failed to install executable from all candidates:\n${errors.joinToString("\n")}")
+    }
+
+    private fun installMacYtDlpFromZip(zipPath: Path, target: Path) {
+        val parent = target.parent ?: error("invalid target path: $target")
+        val internalDir = parent.resolve("_internal")
+        runCatching { Files.walk(internalDir).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+
+        extractZip(zipPath, parent)
+
+        val extracted = findBinary(parent, "yt-dlp_macos") ?: findBinary(parent, "yt-dlp")
+            ?: error("yt-dlp executable not found in mac zip")
+        Files.copy(extracted, target, StandardCopyOption.REPLACE_EXISTING)
+        makeExecutable(target, "mac")
+    }
+
+    private fun extractBinaryFromZip(zipPath: Path, outBinary: Path, expectedName: String) {
+        val found = mutableListOf<Pair<String, ByteArray>>()
+        ZipInputStream(BufferedInputStream(zipPath.inputStream())).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    val entryName = entry.name.substringAfterLast("/")
+                    if (entryName == expectedName || entryName == "yt-dlp_macos" || entryName == "yt-dlp") {
+                        found += entryName to zip.readBytes()
+                    }
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+        val bytes = found.firstOrNull()?.second ?: error("executable entry not found in zip")
+        outBinary.writeBytes(bytes)
     }
 
     private fun extractZip(archive: Path, destination: Path) {
@@ -215,8 +298,11 @@ class ToolManager(
     }
 
     private fun resolveExistingBinary(appBinary: Path, commandName: String, checkArg: String): Path? {
-        if (appBinary.exists() && isExecutable(appBinary, checkArg)) {
-            return appBinary
+        val os = detectOs()
+        if (appBinary.exists()) {
+            if (isExecutable(appBinary, checkArg)) return appBinary
+            makeExecutable(appBinary, os)
+            if (isExecutable(appBinary, checkArg)) return appBinary
         }
         val fromPath = findInPath(commandName)
         if (fromPath != null && isExecutable(fromPath, checkArg)) {
@@ -226,19 +312,76 @@ class ToolManager(
     }
 
     private fun requireExecutable(path: Path, checkArg: String) {
-        if (!isExecutable(path, checkArg)) {
-            error("Installed tool is not executable: $path")
+        val probe = probeExecutable(path, checkArg)
+        if (!probe.ok) {
+            error("Installed tool is not executable: $path (${probe.details})")
+        }
+    }
+
+    private fun makeExecutable(path: Path, os: String) {
+        if (os == "windows" || !Files.exists(path)) return
+
+        runCatching {
+            val perms = runCatching { Files.getPosixFilePermissions(path) }.getOrDefault(emptySet())
+            val updated = perms.toMutableSet().apply {
+                add(PosixFilePermission.OWNER_EXECUTE)
+                add(PosixFilePermission.GROUP_EXECUTE)
+                add(PosixFilePermission.OTHERS_EXECUTE)
+                add(PosixFilePermission.OWNER_READ)
+            }
+            Files.setPosixFilePermissions(path, updated)
+        }
+        runCatching { path.toFile().setExecutable(true, false) }
+        runCatching {
+            ProcessBuilder("chmod", "755", path.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+                .waitFor(5, TimeUnit.SECONDS)
+        }
+
+        if (os == "mac") {
+            runCatching {
+                ProcessBuilder("xattr", "-d", "com.apple.quarantine", path.toAbsolutePath().toString())
+                    .redirectErrorStream(true)
+                    .start()
+                    .waitFor(5, TimeUnit.SECONDS)
+            }
         }
     }
 
     private fun isExecutable(path: Path, checkArg: String): Boolean {
+        return probeExecutable(path, checkArg).ok
+    }
+
+    private fun probeExecutable(path: Path, checkArg: String): ExecProbe {
         return try {
             val process = ProcessBuilder(path.toAbsolutePath().toString(), checkArg)
                 .redirectErrorStream(true)
                 .start()
-            process.waitFor(8, TimeUnit.SECONDS) && process.exitValue() == 0
-        } catch (_: Throwable) {
-            false
+            // Drain output while running to avoid pipe backpressure causing false timeouts.
+            val outputBuffer = StringBuilder()
+            val outputCollector = Thread {
+                runCatching {
+                    process.inputStream.bufferedReader().use { outputBuffer.append(it.readText()) }
+                }
+            }.apply { isDaemon = true; start() }
+
+            val finished = process.waitFor(toolProbeTimeoutSeconds, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                process.waitFor(2, TimeUnit.SECONDS)
+                return ExecProbe(false, "timeout")
+            }
+            outputCollector.join(2000)
+            val output = outputBuffer.toString().trim()
+            if (process.exitValue() == 0) {
+                ExecProbe(true, output.lineSequence().firstOrNull().orEmpty())
+            } else {
+                val first = output.lineSequence().firstOrNull().orEmpty()
+                ExecProbe(false, "exit=${process.exitValue()} ${if (first.isBlank()) "(no output)" else first}")
+            }
+        } catch (t: Throwable) {
+            ExecProbe(false, t.message ?: t::class.simpleName.orEmpty())
         }
     }
 
@@ -258,11 +401,21 @@ class ToolManager(
     }
 
     private fun buildYtDlpCandidates(os: String, sources: ToolSources): List<String> {
-        return listOfNotNull(
-            sources.ytDlp[os],
-            if (os == "windows") "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            else "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-        ).distinct()
+        return when (os) {
+            "windows" -> listOfNotNull(
+                sources.ytDlp[os],
+                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+            ).distinct()
+            "mac" -> listOfNotNull(
+                sources.ytDlp[os],
+                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
+                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos.zip"
+            ).distinct()
+            else -> listOfNotNull(
+                sources.ytDlp[os],
+                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+            ).distinct()
+        }
     }
 
     private fun buildFfmpegCandidates(os: String, arch: String, sources: ToolSources): List<String> {
