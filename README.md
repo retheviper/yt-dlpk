@@ -42,5 +42,8 @@ Language versions:
 
 ## Notes
 
+- This app internally uses `yt-dlp` and `ffmpeg` for analysis and downloads.
+- Official support is for Windows and macOS.
+- Linux execution is not guaranteed.
 - Availability depends on site support and content status.
 - Some videos may be unavailable due to age/region/access restrictions.
