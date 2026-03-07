@@ -428,11 +428,11 @@ class AppViewModel(
     }
 
     private fun quickFormatSelector(profile: QuickQualityProfile): String = when (profile) {
-        QuickQualityProfile.BEST -> "bestvideo*+bestaudio/best"
-        QuickQualityProfile.UP_TO_2160P -> "bestvideo*[height<=2160]+bestaudio/best[height<=2160]/best"
-        QuickQualityProfile.UP_TO_1440P -> "bestvideo*[height<=1440]+bestaudio/best[height<=1440]/best"
-        QuickQualityProfile.UP_TO_1080P -> "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best"
-        QuickQualityProfile.UP_TO_720P -> "bestvideo*[height<=720]+bestaudio/best[height<=720]/best"
+        QuickQualityProfile.BEST -> "bestvideo+bestaudio/best"
+        QuickQualityProfile.UP_TO_2160P -> "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"
+        QuickQualityProfile.UP_TO_1440P -> "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
+        QuickQualityProfile.UP_TO_1080P -> "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+        QuickQualityProfile.UP_TO_720P -> "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
         QuickQualityProfile.AUDIO_ONLY -> "bestaudio/best"
     }
 }
