@@ -8,6 +8,8 @@ plugins {
 kotlin {
     jvm("desktop")
 
+    jvmToolchain(25)
+
     sourceSets {
         val desktopMain by getting {
             dependencies {
@@ -47,7 +49,7 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
             )
             packageName = "yt-dlpk"
-            packageVersion = "1.0.0"
+            packageVersion = "1.0.1"
             vendor = "yt-dlpk"
             description = "yt-dlp GUI desktop app built with Kotlin + Compose"
             modules("java.sql")
