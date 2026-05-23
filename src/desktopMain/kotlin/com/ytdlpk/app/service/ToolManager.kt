@@ -51,7 +51,7 @@ class ToolManager(
     private val appHome: Path,
     private val resourceLoader: (String) -> String
 ) {
-    private val toolProbeTimeoutSeconds = 60L
+    private val toolProbeTimeoutSeconds = 10L
     private val networkTimeout = Duration.ofSeconds(30)
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
@@ -621,7 +621,20 @@ class ToolManager(
     }
 
     private fun findInPath(commandName: String): Path? {
-        val locator = if (detectOs() == "windows") "where" else "which"
+        val os = detectOs()
+        val pathCandidates = pathSearchDirectories(os)
+            .map { it.resolve(commandName) }
+            .flatMap { candidate ->
+                if (os == "windows" && !candidate.fileName.toString().contains(".")) {
+                    listOf(candidate.resolveSibling("${candidate.fileName}.exe"), candidate)
+                } else {
+                    listOf(candidate)
+                }
+            }
+            .firstOrNull { Files.isRegularFile(it) }
+        if (pathCandidates != null) return pathCandidates
+
+        val locator = if (os == "windows") "where" else "which"
         return try {
             val process = ProcessBuilder(locator, commandName)
                 .redirectErrorStream(true)
@@ -633,6 +646,34 @@ class ToolManager(
         } catch (_: Throwable) {
             null
         }
+    }
+
+    private fun pathSearchDirectories(os: String): List<Path> {
+        val envPath = System.getenv("PATH")
+            ?.split(java.io.File.pathSeparator)
+            ?.filter { it.isNotBlank() }
+            ?.map { Path.of(it) }
+            .orEmpty()
+        val home = System.getProperty("user.home")?.let { Path.of(it) }
+        val defaults = when (os) {
+            "mac" -> listOf(
+                Path.of("/opt/homebrew/bin"),
+                Path.of("/usr/local/bin"),
+                Path.of("/opt/local/bin"),
+                Path.of("/usr/bin"),
+                Path.of("/bin")
+            )
+            "windows" -> emptyList()
+            else -> listOfNotNull(
+                home?.resolve(".local/bin"),
+                Path.of("/home/linuxbrew/.linuxbrew/bin"),
+                Path.of("/usr/local/bin"),
+                Path.of("/usr/bin"),
+                Path.of("/bin"),
+                Path.of("/snap/bin")
+            )
+        }
+        return (envPath + defaults).distinct()
     }
 
     private fun buildYtDlpCandidates(os: String, sources: ToolSources): List<String> {

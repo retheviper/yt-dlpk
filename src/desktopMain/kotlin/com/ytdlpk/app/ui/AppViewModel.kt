@@ -546,7 +546,6 @@ class AppViewModel(
                         logs = (it.logs + "yt-dlp: $analyzeYtDlpPath").takeLast(400)
                     )
                 }
-                prepareFfmpegInBackground()
             } catch (e: Throwable) {
                 update {
                     it.copy(
