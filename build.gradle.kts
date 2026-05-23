@@ -53,7 +53,7 @@ compose.desktop {
             packageVersion = "1.0.1"
             vendor = "yt-dlpk"
             description = "yt-dlp GUI desktop app built with Kotlin + Compose"
-            modules("java.sql")
+            modules("java.net.http", "java.sql")
             macOS {
                 iconFile.set(project.file("src/desktopMain/resources/icons/icon.icns"))
             }
