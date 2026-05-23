@@ -20,6 +20,29 @@ Language versions:
 - Set output folder and filename template
 - Track progress and cancel anytime
 
+## Recommended Setup
+
+`yt-dlpk` can download app-managed `yt-dlp` and `ffmpeg` when they are missing, but installing them on your system is recommended. System-installed tools usually start faster and are easier to keep up to date.
+
+macOS with Homebrew:
+
+```sh
+brew install yt-dlp ffmpeg
+```
+
+Windows with winget:
+
+```powershell
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg
+```
+
+Windows with Chocolatey:
+
+```powershell
+choco install yt-dlp ffmpeg
+```
+
 ## How To Use
 
 1. Launch the app.
@@ -39,6 +62,28 @@ Language versions:
 - Start with one short video to confirm your settings.
 - Set your output folder first so files are easy to find.
 - For playlist links, double-check whether `playlist all` is enabled.
+
+## Local Build
+
+JDK 25 is required.
+
+Run tests:
+
+```sh
+./gradlew desktopTest
+```
+
+Run the app locally:
+
+```sh
+./gradlew run
+```
+
+Build a release package for the current OS:
+
+```sh
+./gradlew packageReleaseDistributionForCurrentOS
+```
 
 ## Notes
 

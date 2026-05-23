@@ -20,6 +20,29 @@
 - 保存先フォルダとファイル名ルールの設定
 - 進捗確認と途中キャンセル
 
+## 推奨セットアップ
+
+`yt-dlpk` は `yt-dlp` と `ffmpeg` が見つからない場合、アプリ管理のツールとしてダウンロードできます。ただし、システムに直接インストールしておくことを推奨します。システムにインストールされたツールの方が起動時の準備が速く、更新もしやすくなります。
+
+macOS Homebrew:
+
+```sh
+brew install yt-dlp ffmpeg
+```
+
+Windows winget:
+
+```powershell
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg
+```
+
+Windows Chocolatey:
+
+```powershell
+choco install yt-dlp ffmpeg
+```
+
 ## 使い方
 
 1. アプリを起動します。
@@ -39,6 +62,28 @@
 - まずは短い動画1本で設定を試すのがおすすめです。
 - 保存先フォルダを先に決めておくと管理しやすくなります。
 - プレイリストURLでは、全体保存の設定を必ず確認してください。
+
+## ローカルビルド
+
+JDK 25 が必要です。
+
+テストを実行:
+
+```sh
+./gradlew desktopTest
+```
+
+ローカルでアプリを起動:
+
+```sh
+./gradlew run
+```
+
+現在のOS向けのリリースパッケージをビルド:
+
+```sh
+./gradlew packageReleaseDistributionForCurrentOS
+```
 
 ## 注意
 

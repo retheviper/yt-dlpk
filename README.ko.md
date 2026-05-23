@@ -20,6 +20,29 @@
 - 저장 위치와 파일명 규칙 설정
 - 다운로드 진행률 확인 및 취소
 
+## 권장 설정
+
+`yt-dlpk`는 `yt-dlp`와 `ffmpeg`가 없을 때 앱 내부 관리 도구로 내려받을 수 있습니다. 다만 시스템에 직접 설치해 두는 것을 권장합니다. 시스템에 설치된 도구는 보통 더 빠르게 준비되고 업데이트 관리도 쉽습니다.
+
+macOS Homebrew:
+
+```sh
+brew install yt-dlp ffmpeg
+```
+
+Windows winget:
+
+```powershell
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg
+```
+
+Windows Chocolatey:
+
+```powershell
+choco install yt-dlp ffmpeg
+```
+
 ## 사용 방법
 
 1. 앱을 실행합니다.
@@ -39,6 +62,28 @@
 - 먼저 짧은 영상 1개로 테스트해 보세요.
 - 저장 폴더를 먼저 지정해 두면 파일을 찾기 쉽습니다.
 - 플레이리스트 링크는 `전체 저장` 여부를 꼭 확인하세요.
+
+## 로컬 빌드
+
+JDK 25가 필요합니다.
+
+테스트 실행:
+
+```sh
+./gradlew desktopTest
+```
+
+로컬에서 앱 실행:
+
+```sh
+./gradlew run
+```
+
+현재 OS용 릴리즈 패키지 빌드:
+
+```sh
+./gradlew packageReleaseDistributionForCurrentOS
+```
 
 ## 참고
 
