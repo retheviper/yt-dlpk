@@ -1,6 +1,7 @@
 package com.ytdlpk.app.ui
 
 import com.ytdlpk.app.model.AppLanguage
+import com.ytdlpk.app.model.resolve
 
 data class UiStrings(
     val standardMode: String,
@@ -31,6 +32,7 @@ data class UiStrings(
     val extractAudio: String,
     val includeAutoSubs: String,
     val mergeOutputFormat: String,
+    val videoCodec: String,
     val toolVersions: String,
     val checking: String,
     val checkLatest: String,
@@ -59,7 +61,7 @@ data class UiStrings(
 )
 
 fun uiStrings(language: AppLanguage): UiStrings {
-    return when (language) {
+    return when (language.resolve()) {
         AppLanguage.JAPANESE -> UiStrings(
             standardMode = "通常ダウンロード",
             quickMode = "クイックダウンロード",
@@ -89,6 +91,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             extractAudio = "音声抽出 (-x)",
             includeAutoSubs = "自動字幕を含める",
             mergeOutputFormat = "マージ出力形式",
+            videoCodec = "Filter Video Codec",
             toolVersions = "ツールのバージョン",
             checking = "確認中...",
             checkLatest = "最新確認",
@@ -145,6 +148,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             extractAudio = "오디오 추출 (-x)",
             includeAutoSubs = "자동 생성 자막 포함",
             mergeOutputFormat = "병합 출력 포맷",
+            videoCodec = "Filter Video Codec",
             toolVersions = "도구 버전",
             checking = "확인 중...",
             checkLatest = "최신 버전 확인",
@@ -172,6 +176,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             downloadFailedNotification = "다운로드에 실패했습니다"
         )
 
+        AppLanguage.SYSTEM,
         AppLanguage.ENGLISH -> UiStrings(
             standardMode = "Standard",
             quickMode = "Quick Download",
@@ -201,6 +206,7 @@ fun uiStrings(language: AppLanguage): UiStrings {
             extractAudio = "Extract audio (-x)",
             includeAutoSubs = "Include Auto-generated Subtitles",
             mergeOutputFormat = "Merge output format",
+            videoCodec = "Filter Video Codec",
             toolVersions = "Tool Versions",
             checking = "Checking...",
             checkLatest = "Check Latest",

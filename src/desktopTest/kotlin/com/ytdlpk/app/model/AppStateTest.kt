@@ -3,6 +3,7 @@ package com.ytdlpk.app.model
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
+import java.util.Locale
 
 class AppStateTest : StringSpec({
     fun format(id: String, kind: FormatKind) = FormatEntry(
@@ -10,7 +11,7 @@ class AppStateTest : StringSpec({
         ext = "mp4",
         resolution = null,
         fps = null,
-        vcodec = null,
+        vcodec = if (kind == FormatKind.VIDEO_AUDIO || kind == FormatKind.VIDEO_ONLY) "avc1.640028" else null,
         acodec = null,
         tbrKbps = null,
         abrKbps = null,
@@ -66,5 +67,30 @@ class AppStateTest : StringSpec({
             .map { it.formatId }
 
         filtered shouldContainExactly listOf("18", "137", "140", "x")
+    }
+
+    "filters video formats by configured codec preference" {
+        val h264 = format("137", FormatKind.VIDEO_ONLY).copy(vcodec = "avc1.640028")
+        val vp9 = format("248", FormatKind.VIDEO_ONLY).copy(vcodec = "vp9")
+        val audio = format("140", FormatKind.AUDIO_ONLY)
+
+        val filtered = AppState(
+            formats = listOf(h264, vp9, audio),
+            selectedFormatTab = FormatKind.VIDEO_ONLY,
+            settings = AppSettings(videoCodecPreference = VideoCodecPreference.H264)
+        ).filteredFormats.map { it.formatId }
+
+        filtered shouldContainExactly listOf("137")
+    }
+
+    "defaults video codec preference to h264" {
+        AppSettings().videoCodecPreference shouldBe VideoCodecPreference.H264
+    }
+
+    "system language resolves supported locales and falls back to english" {
+        systemAppLanguage(Locale.JAPANESE) shouldBe AppLanguage.JAPANESE
+        systemAppLanguage(Locale.KOREAN) shouldBe AppLanguage.KOREAN
+        systemAppLanguage(Locale.FRENCH) shouldBe AppLanguage.ENGLISH
+        AppLanguage.SYSTEM.resolve(Locale.KOREAN) shouldBe AppLanguage.KOREAN
     }
 })

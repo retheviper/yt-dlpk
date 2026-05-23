@@ -4,6 +4,7 @@ import com.ytdlpk.app.model.DownloadOptions
 import com.ytdlpk.app.model.FormatEntry
 import com.ytdlpk.app.model.FormatKind
 import com.ytdlpk.app.model.PlaylistMode
+import com.ytdlpk.app.model.VideoCodecPreference
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldContain
@@ -158,6 +159,20 @@ class YtDlpCommandBuilderTest : StringSpec({
 
         val fIndex = command.indexOf("-f")
         command[fIndex + 1] shouldBe "bestaudio/best"
+    }
+
+    "adds codec filter to selected video format" {
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(
+                selectedFormatTab = FormatKind.VIDEO_AUDIO,
+                selectedFormat = format("137", FormatKind.VIDEO_ONLY)
+            ).copy(videoCodecPreference = VideoCodecPreference.H264)
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "137[vcodec^=avc1]+bestaudio/best"
     }
 
     "rejects blank output directory" {

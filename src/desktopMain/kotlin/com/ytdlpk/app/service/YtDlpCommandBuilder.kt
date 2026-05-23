@@ -32,7 +32,8 @@ class YtDlpCommandBuilder(
                     selected = selected,
                     selectedTab = options.selectedFormatTab,
                     pairedVideoOnly = options.selectedVideoOnlyFormat,
-                    pairedAudioOnly = options.selectedAudioOnlyFormat
+                    pairedAudioOnly = options.selectedAudioOnlyFormat,
+                    videoCodecPreference = options.videoCodecPreference
                 )
             }
         formatSelector?.let {

@@ -45,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,11 +65,13 @@ import com.ytdlpk.app.model.HomeTab
 import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.QuickQualityProfile
 import com.ytdlpk.app.model.ThemeMode
+import com.ytdlpk.app.model.VideoCodecPreference
 import com.ytdlpk.app.util.formatDuration
 import com.ytdlpk.app.util.formatSortScore
 import com.ytdlpk.app.util.pickDirectory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.skia.Image as SkiaImage
 import java.awt.Toolkit
@@ -242,6 +245,7 @@ fun App(viewModel: AppViewModel) {
 
 @Composable
 private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiStrings) {
+    val clipboardScope = rememberCoroutineScope()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -269,7 +273,14 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = {
-                readClipboardText()?.let { txt -> viewModel.onUrlChange(txt) }
+                clipboardScope.launch {
+                    val clipboardUrl = withContext(Dispatchers.IO) {
+                        readClipboardText()?.trim()
+                    }
+                    clipboardUrl
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { txt -> viewModel.onUrlChange(txt) }
+                }
             },
             colors = ButtonDefaults.buttonColors(
                 backgroundColor = p.panelSoft.copy(alpha = 0.95f),
@@ -279,7 +290,7 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { viewModel.analyze() },
-            enabled = !state.isAnalyzing && !state.isDownloading && state.toolsReady,
+            enabled = !state.isAnalyzing && !state.isDownloading && state.ytDlpReady && state.url.isNotBlank(),
             colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E88E5), contentColor = Color.White)
         ) { Text(s.analyze) }
     }
@@ -287,6 +298,7 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
 
 @Composable
 private fun QuickTopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiStrings) {
+    val clipboardScope = rememberCoroutineScope()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -314,13 +326,17 @@ private fun QuickTopBar(state: AppState, viewModel: AppViewModel, p: Palette, s:
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = {
-                val clipboardUrl = readClipboardText()?.trim()
-                if (clipboardUrl.isNullOrBlank()) {
-                    viewModel.showInfo("Clipboard does not contain a text URL.")
-                } else {
-                    viewModel.onUrlChange(clipboardUrl)
-                    if (state.settings.quickDownloadOnPaste) {
-                        viewModel.quickDownload(urlOverride = clipboardUrl)
+                clipboardScope.launch {
+                    val clipboardUrl = withContext(Dispatchers.IO) {
+                        readClipboardText()?.trim()
+                    }
+                    if (clipboardUrl.isNullOrBlank()) {
+                        viewModel.showInfo("Clipboard does not contain a text URL.")
+                    } else {
+                        viewModel.onUrlChange(clipboardUrl)
+                        if (state.settings.quickDownloadOnPaste) {
+                            viewModel.quickDownload(urlOverride = clipboardUrl)
+                        }
                     }
                 }
             },
@@ -461,6 +477,7 @@ private fun OptionsSection(state: AppState, viewModel: AppViewModel, p: Palette,
     val settings = state.settings
     val audioFormatOptions = listOf("mp3", "m4a", "opus", "wav", "flac")
     val mergeFormatOptions = listOf("mp4", "mkv", "webm", "mov")
+    val videoCodecOptions = VideoCodecPreference.entries
 
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(s.saveLocation, color = p.textMain)
@@ -534,13 +551,25 @@ private fun OptionsSection(state: AppState, viewModel: AppViewModel, p: Palette,
             Text(s.mergeOutputFormat, color = p.textMain)
             SettingDropdown(current = settings.mergeOutputFormat, options = mergeFormatOptions, onSelect = { viewModel.onSettingsChange(settings.copy(mergeOutputFormat = it)) }, width = 160.dp, p = p)
         }
+
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(s.videoCodec, color = p.textMain)
+            SettingDropdown(
+                current = settings.videoCodecPreference,
+                options = videoCodecOptions,
+                label = ::videoCodecLabel,
+                onSelect = { viewModel.onSettingsChange(settings.copy(videoCodecPreference = it)) },
+                width = 160.dp,
+                p = p
+            )
+        }
     }
 }
 
 @Composable
 private fun GlobalOptionsSection(state: AppState, viewModel: AppViewModel, p: Palette, s: UiStrings) {
     val settings = state.settings
-    val languageOptions = listOf(AppLanguage.ENGLISH, AppLanguage.JAPANESE, AppLanguage.KOREAN)
+    val languageOptions = listOf(AppLanguage.SYSTEM, AppLanguage.ENGLISH, AppLanguage.JAPANESE, AppLanguage.KOREAN)
     val themeOptions = listOf(ThemeMode.DARK, ThemeMode.LIGHT)
 
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -901,7 +930,11 @@ private fun rememberThumbnailImage(url: String?): ImageBitmap? {
         if (url.isNullOrBlank()) return@produceState
         value = runCatching {
             withContext(Dispatchers.IO) {
-                URI.create(url).toURL().openStream().use { input ->
+                val connection = URI.create(url).toURL().openConnection().apply {
+                    connectTimeout = 5_000
+                    readTimeout = 10_000
+                }
+                connection.getInputStream().use { input ->
                     SkiaImage.makeFromEncoded(input.readBytes()).toComposeImageBitmap()
                 }
             }
@@ -914,9 +947,18 @@ private fun rememberThumbnailImage(url: String?): ImageBitmap? {
 private fun isSystemDarkMode(): Boolean = isSystemInDarkTheme()
 
 private fun languageLabel(language: AppLanguage): String = when (language) {
+    AppLanguage.SYSTEM -> "System"
     AppLanguage.ENGLISH -> "English"
     AppLanguage.JAPANESE -> "日本語"
     AppLanguage.KOREAN -> "한국어"
+}
+
+private fun videoCodecLabel(codec: VideoCodecPreference): String = when (codec) {
+    VideoCodecPreference.ALL -> "ALL"
+    VideoCodecPreference.H264 -> "H.264"
+    VideoCodecPreference.H265 -> "H.265/HEVC"
+    VideoCodecPreference.AV1 -> "AV1"
+    VideoCodecPreference.VP9 -> "VP9"
 }
 
 private fun themeModeLabel(themeMode: ThemeMode): String = when (themeMode) {
