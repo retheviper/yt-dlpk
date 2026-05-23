@@ -37,7 +37,8 @@ compose.desktop {
     application {
         mainClass = "com.ytdlpk.app.MainKt"
         buildTypes.release.proguard {
-            isEnabled.set(false)
+            version.set(libs.versions.proguard)
+            isEnabled.set(true)
             configurationFiles.from(project.file("proguard-rules.pro"))
         }
 
