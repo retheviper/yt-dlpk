@@ -8,6 +8,10 @@ import com.ytdlpk.app.model.FormatKind
 import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.QuickQualityProfile
 import com.ytdlpk.app.model.ToolPaths
+import com.ytdlpk.app.model.VideoCodecPreference
+import com.ytdlpk.app.model.VideoMetadata
+import com.ytdlpk.app.model.matchesVideoCodec
+import com.ytdlpk.app.service.AnalyzeResult
 import com.ytdlpk.app.service.RunningProcess
 import com.ytdlpk.app.service.SettingsRepository
 import com.ytdlpk.app.service.ToolManager
@@ -28,8 +32,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.supervisorScope
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
+
+private data class AnalyzeCacheKey(
+    val url: String,
+    val playlistMode: PlaylistMode
+)
 
 class AppViewModel(
     private val appHome: Path,
@@ -42,7 +54,13 @@ class AppViewModel(
     val state: StateFlow<AppState> = _state.asStateFlow()
 
     private var tools: ToolPaths? = null
+    private var analyzeYtDlpPath: String? = null
+    private var ffmpegPath: String? = null
+    private var ytDlpManaged: Boolean = false
+    private var ffmpegManaged: Boolean = false
     private var runningProcess: RunningProcess? = null
+    private var lastAnalyzeCacheKey: AnalyzeCacheKey? = null
+    private var lastAnalyzeResult: AnalyzeResult? = null
 
     init {
         appHome.createDirectories()
@@ -53,9 +71,16 @@ class AppViewModel(
 
     fun onTabChange(kind: FormatKind) = update { state ->
         val tabSelection = when (kind) {
-            FormatKind.VIDEO_ONLY -> state.selectedVideoOnlyFormatId ?: pickBestFormatId(state.formats, kind)
+            FormatKind.VIDEO_ONLY -> state.selectedVideoOnlyFormat
+                ?.takeIf { it.matchesVideoCodec(state.settings.videoCodecPreference) }
+                ?.formatId
+                ?: pickBestFormatId(
+                    state.formats,
+                    kind,
+                    state.settings.videoCodecPreference
+                )
             FormatKind.AUDIO_ONLY -> state.selectedAudioOnlyFormatId ?: pickBestFormatId(state.formats, kind)
-            else -> pickBestFormatId(state.formats, kind)
+            else -> pickBestFormatId(state.formats, kind, state.settings.videoCodecPreference)
         }
         state.copy(
             selectedFormatTab = kind,
@@ -85,7 +110,18 @@ class AppViewModel(
 
     fun onSettingsChange(settings: AppSettings) {
         settingsRepository.save(settings)
-        update { it.copy(settings = settings) }
+        update { state ->
+            val selected = state.selectedFormat?.takeIf { it.matchesVideoCodec(settings.videoCodecPreference) }?.formatId
+                ?: pickBestFormatId(state.formats, state.selectedFormatTab, settings.videoCodecPreference)
+            state.copy(
+                settings = settings,
+                selectedFormatId = selected,
+                selectedVideoOnlyFormatId = state.selectedVideoOnlyFormat
+                    ?.takeIf { it.matchesVideoCodec(settings.videoCodecPreference) }
+                    ?.formatId
+                    ?: pickBestFormatId(state.formats, FormatKind.VIDEO_ONLY, settings.videoCodecPreference)
+            )
+        }
     }
 
     fun showInfo(message: String) = update { it.copy(infoMessage = message) }
@@ -112,16 +148,42 @@ class AppViewModel(
     }
 
     fun updateYtDlp() {
-        val currentTools = tools ?: return
-        if (!currentTools.ytDlpManaged) {
-            update { it.copy(infoMessage = "yt-dlp is managed by system PATH. Please update it directly on your system.") }
+        val currentPath = analyzeYtDlpPath ?: tools?.ytDlpPath
+        if (currentPath == null) {
+            update { it.copy(infoMessage = "yt-dlp is not ready yet.") }
             return
         }
         scope.launch {
             try {
-                update { it.copy(toolStatus = "Updating yt-dlp...") }
-                val updated = toolManager.updateManagedYtDlp { status -> update { s -> s.copy(toolStatus = status) } }
-                tools = currentTools.copy(ytDlpPath = updated.ytDlpPath, ytDlpManaged = updated.ytDlpManaged)
+                update { it.copy(toolStatus = "Checking yt-dlp version...") }
+                val currentVersion = toolManager.getYtDlpVersion(currentPath)
+                val latestVersion = toolManager.getLatestYtDlpVersion()
+                val comparison = toolManager.compareVersions(currentVersion, latestVersion)
+                update { it.copy(latestYtDlpVersion = latestVersion) }
+
+                if (comparison != null && comparison >= 0) {
+                    update { it.copy(toolStatus = "yt-dlp ready", infoMessage = "yt-dlp is already up to date.") }
+                    refreshInstalledVersions()
+                    return@launch
+                }
+
+                if (ytDlpManaged) {
+                    update { it.copy(toolStatus = "Updating yt-dlp...") }
+                    val updated = toolManager.updateManagedYtDlp { status -> update { s -> s.copy(toolStatus = status) } }
+                    analyzeYtDlpPath = updated.ytDlpPath
+                    ytDlpManaged = updated.ytDlpManaged
+                    tools = (tools ?: ToolPaths(updated.ytDlpPath, ffmpegPath.orEmpty(), updated.ytDlpManaged, ffmpegManaged))
+                        .copy(ytDlpPath = updated.ytDlpPath, ytDlpManaged = updated.ytDlpManaged)
+                    refreshInstalledVersions()
+                    update { it.copy(toolStatus = "yt-dlp updated", infoMessage = "yt-dlp updated successfully.") }
+                    return@launch
+                }
+
+                val result = toolManager.updateSystemYtDlp(currentPath) { status -> update { s -> s.copy(toolStatus = status) } }
+                if (!result.updated) {
+                    update { it.copy(toolStatus = "yt-dlp ready", infoMessage = result.message) }
+                    return@launch
+                }
                 refreshInstalledVersions()
                 update { it.copy(toolStatus = "yt-dlp updated", infoMessage = "yt-dlp updated successfully.") }
             } catch (e: Throwable) {
@@ -131,16 +193,38 @@ class AppViewModel(
     }
 
     fun updateFfmpeg() {
-        val currentTools = tools ?: return
-        if (!currentTools.ffmpegManaged) {
-            update { it.copy(infoMessage = "ffmpeg is managed by system PATH. Please update it directly on your system.") }
-            return
-        }
         scope.launch {
             try {
-                update { it.copy(toolStatus = "Updating ffmpeg...") }
-                val updated = toolManager.updateManagedFfmpeg { status -> update { s -> s.copy(toolStatus = status) } }
-                tools = currentTools.copy(ffmpegPath = updated.ffmpegPath, ffmpegManaged = updated.ffmpegManaged)
+                val currentPath = ffmpegPath ?: tools?.ffmpegPath ?: ensureFfmpegReady()
+                update { it.copy(toolStatus = "Checking ffmpeg version...") }
+                val currentVersion = toolManager.getFfmpegVersion(currentPath)
+                val latestVersion = toolManager.getLatestFfmpegVersion()
+                val comparison = toolManager.compareVersions(currentVersion, latestVersion)
+                update { it.copy(latestFfmpegVersion = latestVersion) }
+
+                if (comparison != null && comparison >= 0) {
+                    update { it.copy(toolStatus = "Tools ready", infoMessage = "ffmpeg is already up to date.") }
+                    refreshInstalledVersions()
+                    return@launch
+                }
+
+                if (ffmpegManaged) {
+                    update { it.copy(toolStatus = "Updating ffmpeg...") }
+                    val updated = toolManager.updateManagedFfmpeg { status -> update { s -> s.copy(toolStatus = status) } }
+                    ffmpegPath = updated.ffmpegPath
+                    ffmpegManaged = updated.ffmpegManaged
+                    tools = (tools ?: ToolPaths(analyzeYtDlpPath.orEmpty(), updated.ffmpegPath, ytDlpManaged, updated.ffmpegManaged))
+                        .copy(ffmpegPath = updated.ffmpegPath, ffmpegManaged = updated.ffmpegManaged)
+                    refreshInstalledVersions()
+                    update { it.copy(toolStatus = "ffmpeg updated", infoMessage = "ffmpeg updated successfully.") }
+                    return@launch
+                }
+
+                val result = toolManager.updateSystemFfmpeg(currentPath) { status -> update { s -> s.copy(toolStatus = status) } }
+                if (!result.updated) {
+                    update { it.copy(toolStatus = "Tools ready", infoMessage = result.message) }
+                    return@launch
+                }
                 refreshInstalledVersions()
                 update { it.copy(toolStatus = "ffmpeg updated", infoMessage = "ffmpeg updated successfully.") }
             } catch (e: Throwable) {
@@ -155,40 +239,89 @@ class AppViewModel(
 
     fun analyze() {
         val snapshot = state.value
-        if (!snapshot.toolsReady || snapshot.url.isBlank()) return
+        val ytDlpPath = analyzeYtDlpPath ?: tools?.ytDlpPath
+        val url = snapshot.url.trim()
+        if (!snapshot.ytDlpReady || ytDlpPath == null || url.isBlank()) return
+
+        if (url != snapshot.url) {
+            update { it.copy(url = url) }
+        }
+
+        val cacheKey = AnalyzeCacheKey(url = url, playlistMode = snapshot.playlistMode)
+        val cached = lastAnalyzeResult.takeIf { lastAnalyzeCacheKey == cacheKey }
+        if (cached != null) {
+            applyAnalyzeResult(
+                metadata = cached.metadata,
+                formats = cached.formats,
+                settings = snapshot.settings,
+                logMessage = "Analyze cache hit: ${cached.formats.size} formats"
+            )
+            return
+        }
 
         scope.launch {
-            update { it.copy(isAnalyzing = true, lastError = null) }
+            update {
+                it.copy(
+                    isAnalyzing = true,
+                    lastError = null,
+                    metadata = null,
+                    formats = emptyList(),
+                    selectedFormatId = null,
+                    selectedVideoOnlyFormatId = null,
+                    selectedAudioOnlyFormatId = null
+                )
+            }
             try {
-                val toolPaths = requireNotNull(tools)
-                val (metadata, formats) = coroutineScope {
-                    val metadataDef = async {
-                        ytDlpService.analyzeMetadata(toolPaths.ytDlpPath, snapshot.url, snapshot.playlistMode)
+                supervisorScope {
+                    var metadata: VideoMetadata? = null
+                    var formats: List<FormatEntry>? = null
+                    var firstFailure: Throwable? = null
+
+                    val metadataJob = launch {
+                        runCatching {
+                            ytDlpService.analyzeMetadata(ytDlpPath, url, snapshot.playlistMode)
+                        }
+                            .onSuccess { result ->
+                                metadata = result
+                                update { state ->
+                                    state.copy(
+                                        metadata = result,
+                                        logs = (state.logs + "Metadata loaded").takeLast(400)
+                                    )
+                                }
+                            }
+                            .onFailure { firstFailure = it }
                     }
-                    val formatsDef = async {
-                        ytDlpService.analyzeFormats(toolPaths.ytDlpPath, snapshot.url)
+                    val formatsJob = launch {
+                        runCatching {
+                            ytDlpService.analyzeFormats(ytDlpPath, url, snapshot.playlistMode)
+                        }
+                            .onSuccess { result ->
+                                formats = result
+                                applyFormats(
+                                    formats = result,
+                                    settings = snapshot.settings,
+                                    logMessage = "Formats loaded: ${result.size} formats"
+                                )
+                            }
+                            .onFailure { if (firstFailure == null) firstFailure = it }
                     }
-                    metadataDef.await() to formatsDef.await()
-                }
-                val defaultTab = when {
-                    formats.any { it.kind == FormatKind.VIDEO_AUDIO } -> FormatKind.VIDEO_AUDIO
-                    formats.any { it.kind == FormatKind.VIDEO_ONLY } -> FormatKind.VIDEO_ONLY
-                    formats.any { it.kind == FormatKind.AUDIO_ONLY } -> FormatKind.AUDIO_ONLY
-                    else -> FormatKind.VIDEO_AUDIO
-                }
-                val selected = pickBestFormatId(formats, defaultTab)
-                val selectedVideoOnly = pickBestFormatId(formats, FormatKind.VIDEO_ONLY)
-                val selectedAudioOnly = pickBestFormatId(formats, FormatKind.AUDIO_ONLY)
-                update {
-                    it.copy(
-                        metadata = metadata,
-                        formats = formats,
-                        selectedFormatTab = defaultTab,
-                        selectedFormatId = selected,
-                        selectedVideoOnlyFormatId = selectedVideoOnly,
-                        selectedAudioOnlyFormatId = selectedAudioOnly,
-                        logs = (it.logs + "Analyze complete: ${formats.size} formats").takeLast(400)
-                    )
+
+                    joinAll(metadataJob, formatsJob)
+
+                    val loadedMetadata = metadata
+                    val loadedFormats = formats
+                    if (loadedMetadata != null && loadedFormats != null) {
+                        lastAnalyzeCacheKey = cacheKey
+                        lastAnalyzeResult = AnalyzeResult(loadedMetadata, loadedFormats)
+                        update { state ->
+                            state.copy(
+                                logs = (state.logs + "Analyze complete: ${loadedFormats.size} formats").takeLast(400)
+                            )
+                        }
+                    } else {
+                        firstFailure?.let { throw it }
+                    }
                 }
             } catch (e: Throwable) {
                 update {
@@ -203,9 +336,45 @@ class AppViewModel(
         }
     }
 
+    private fun applyAnalyzeResult(
+        metadata: VideoMetadata,
+        formats: List<FormatEntry>,
+        settings: AppSettings,
+        logMessage: String
+    ) {
+        update { state -> state.copy(metadata = metadata) }
+        applyFormats(formats, settings, logMessage)
+    }
+
+    private fun applyFormats(
+        formats: List<FormatEntry>,
+        settings: AppSettings,
+        logMessage: String
+    ) {
+        val defaultTab = when {
+            formats.any { it.kind == FormatKind.VIDEO_AUDIO && it.matchesVideoCodec(settings.videoCodecPreference) } -> FormatKind.VIDEO_AUDIO
+            formats.any { it.kind == FormatKind.VIDEO_ONLY && it.matchesVideoCodec(settings.videoCodecPreference) } -> FormatKind.VIDEO_ONLY
+            formats.any { it.kind == FormatKind.AUDIO_ONLY } -> FormatKind.AUDIO_ONLY
+            else -> FormatKind.VIDEO_AUDIO
+        }
+        val selected = pickBestFormatId(formats, defaultTab, settings.videoCodecPreference)
+        val selectedVideoOnly = pickBestFormatId(formats, FormatKind.VIDEO_ONLY, settings.videoCodecPreference)
+        val selectedAudioOnly = pickBestFormatId(formats, FormatKind.AUDIO_ONLY)
+        update {
+            it.copy(
+                formats = formats,
+                selectedFormatTab = defaultTab,
+                selectedFormatId = selected,
+                selectedVideoOnlyFormatId = selectedVideoOnly,
+                selectedAudioOnlyFormatId = selectedAudioOnly,
+                logs = (it.logs + logMessage).takeLast(400)
+            )
+        }
+    }
+
     fun download() {
         val snapshot = state.value
-        val toolPaths = tools ?: return
+        val ytDlpPath = analyzeYtDlpPath ?: tools?.ytDlpPath ?: return
         if (snapshot.isDownloading || snapshot.url.isBlank()) return
 
         val options = DownloadOptions(
@@ -221,7 +390,8 @@ class AppViewModel(
             subLang = snapshot.settings.subLang,
             extractAudio = snapshot.settings.extractAudio,
             audioFormat = snapshot.settings.audioFormat,
-            mergeOutputFormat = snapshot.settings.mergeOutputFormat
+            mergeOutputFormat = snapshot.settings.mergeOutputFormat,
+            videoCodecPreference = snapshot.settings.videoCodecPreference
         )
 
         update {
@@ -232,26 +402,11 @@ class AppViewModel(
             )
         }
 
-        runningProcess = ytDlpService.startDownload(
-            scope = scope,
-            ytDlpPath = toolPaths.ytDlpPath,
-            ffmpegPath = toolPaths.ffmpegPath,
+        startDownloadProcess(
+            ytDlpPath = ytDlpPath,
             options = options,
-            onStdoutLine = { addLog(it) },
-            onStderrLine = { addLog("[err] $it") },
-            onProgress = { progress -> update { it.copy(progress = progress) } },
-            onExit = { code ->
-                val dialogMessage = handleDownloadExit(code)
-                update {
-                    it.copy(
-                        isDownloading = false,
-                        progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
-                        logs = (it.logs + "Download finished with code $code").takeLast(400),
-                        lastError = if (code == 0) null else "Download failed: exit code $code",
-                        errorDialogMessage = dialogMessage
-                    )
-                }
-            }
+            finishLogPrefix = "Download finished",
+            failurePrefix = "Download failed"
         )
     }
 
@@ -271,8 +426,8 @@ class AppViewModel(
             update { it.copy(infoMessage = "URL is empty. Paste a valid URL and try again.") }
             return
         }
-        val toolPaths = tools
-        if (toolPaths == null) {
+        val ytDlpPath = analyzeYtDlpPath ?: tools?.ytDlpPath
+        if (ytDlpPath == null) {
             update { it.copy(infoMessage = "Tools are not ready yet. Please wait a moment and try again.") }
             return
         }
@@ -286,12 +441,16 @@ class AppViewModel(
             selectedFormat = null,
             selectedVideoOnlyFormat = null,
             selectedAudioOnlyFormat = null,
-            quickFormatSelector = quickFormatSelector(snapshot.settings.quickQualityProfile),
+            quickFormatSelector = quickFormatSelector(
+                snapshot.settings.quickQualityProfile,
+                snapshot.settings.videoCodecPreference
+            ),
             includeAutoSubs = snapshot.settings.includeAutoSubs,
             subLang = snapshot.settings.subLang,
             extractAudio = snapshot.settings.extractAudio,
             audioFormat = snapshot.settings.audioFormat,
-            mergeOutputFormat = snapshot.settings.mergeOutputFormat
+            mergeOutputFormat = snapshot.settings.mergeOutputFormat,
+            videoCodecPreference = snapshot.settings.videoCodecPreference
         )
 
         update {
@@ -302,26 +461,11 @@ class AppViewModel(
             )
         }
 
-        runningProcess = ytDlpService.startDownload(
-            scope = scope,
-            ytDlpPath = toolPaths.ytDlpPath,
-            ffmpegPath = toolPaths.ffmpegPath,
+        startDownloadProcess(
+            ytDlpPath = ytDlpPath,
             options = options,
-            onStdoutLine = { addLog(it) },
-            onStderrLine = { addLog("[err] $it") },
-            onProgress = { progress -> update { it.copy(progress = progress) } },
-            onExit = { code ->
-                val dialogMessage = handleDownloadExit(code)
-                update {
-                    it.copy(
-                        isDownloading = false,
-                        progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
-                        logs = (it.logs + "Quick download finished with code $code").takeLast(400),
-                        lastError = if (code == 0) null else "Quick download failed: exit code $code",
-                        errorDialogMessage = dialogMessage
-                    )
-                }
-            }
+            finishLogPrefix = "Quick download finished",
+            failurePrefix = "Quick download failed"
         )
     }
 
@@ -336,23 +480,77 @@ class AppViewModel(
         }
     }
 
+    fun close() {
+        runningProcess?.cancel()
+        runningProcess = null
+        scope.cancel()
+    }
+
+    private fun startDownloadProcess(
+        ytDlpPath: String,
+        options: DownloadOptions,
+        finishLogPrefix: String,
+        failurePrefix: String
+    ) {
+        scope.launch {
+            try {
+                val resolvedFfmpegPath = ensureFfmpegReady()
+                runningProcess = ytDlpService.startDownload(
+                    scope = scope,
+                    ytDlpPath = ytDlpPath,
+                    ffmpegPath = resolvedFfmpegPath,
+                    options = options,
+                    onStdoutLine = { addLog(it) },
+                    onStderrLine = { addLog("[err] $it") },
+                    onProgress = { progress -> update { it.copy(progress = progress) } },
+                    onExit = { code ->
+                        runningProcess = null
+                        val dialogMessage = handleDownloadExit(code)
+                        update {
+                            it.copy(
+                                isDownloading = false,
+                                progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
+                                logs = (it.logs + "$finishLogPrefix with code $code").takeLast(400),
+                                lastError = if (code == 0) null else "$failurePrefix: exit code $code",
+                                errorDialogMessage = dialogMessage
+                            )
+                        }
+                    }
+                )
+            } catch (e: Throwable) {
+                runningProcess = null
+                update {
+                    it.copy(
+                        isDownloading = false,
+                        lastError = e.message,
+                        logs = (it.logs + "$failurePrefix: ${e.message}").takeLast(400),
+                        errorDialogMessage = e.message
+                    )
+                }
+            }
+        }
+    }
+
     private fun ensureTools() {
         scope.launch {
             try {
-                update { it.copy(toolStatus = "Checking tools...") }
-                val resolved = toolManager.ensureTools { status -> update { state -> state.copy(toolStatus = status) } }
-                tools = resolved
-                refreshInstalledVersions()
+                update { it.copy(toolStatus = "Checking yt-dlp...") }
+                val ytDlp = toolManager.ensureYtDlp { status -> update { state -> state.copy(toolStatus = status) } }
+                analyzeYtDlpPath = ytDlp.toAbsolutePath().toString()
+                ytDlpManaged = ytDlp.startsWith(appHome.resolve("tools").resolve("bin"))
                 update {
                     it.copy(
-                        toolsReady = true,
-                        toolStatus = "Tools ready",
-                        logs = (it.logs + "yt-dlp: ${resolved.ytDlpPath}" + "\n" + "ffmpeg: ${resolved.ffmpegPath}").takeLast(400)
+                        ytDlpReady = true,
+                        toolStatus = "yt-dlp ready",
+                        ytDlpVersion = toolManager.getYtDlpVersion(analyzeYtDlpPath!!) + if (ytDlpManaged) " (app)" else " (system)",
+                        logs = (it.logs + "yt-dlp: $analyzeYtDlpPath").takeLast(400)
                     )
                 }
+                prepareFfmpegInBackground()
             } catch (e: Throwable) {
                 update {
                     it.copy(
+                        ytDlpReady = false,
                         toolsReady = false,
                         toolStatus = "Tool setup failed",
                         lastError = e.message,
@@ -363,14 +561,61 @@ class AppViewModel(
         }
     }
 
-    private fun refreshInstalledVersions() {
-        val t = tools ?: return
-        val ytVersion = toolManager.getYtDlpVersion(t.ytDlpPath)
-        val ffVersion = toolManager.getFfmpegVersion(t.ffmpegPath)
+    private fun prepareFfmpegInBackground() {
+        scope.launch {
+            runCatching {
+                ensureFfmpegReady()
+            }.onFailure { e ->
+                update {
+                    it.copy(
+                        ffmpegReady = false,
+                        toolsReady = false,
+                        toolStatus = "ffmpeg setup failed",
+                        lastError = e.message,
+                        logs = (it.logs + "ffmpeg setup failed: ${e.message}").takeLast(400)
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun ensureFfmpegReady(): String {
+        ffmpegPath?.let { return it }
+        update { it.copy(toolStatus = "Checking ffmpeg...") }
+        val ffmpeg = toolManager.ensureFfmpeg { status -> update { state -> state.copy(toolStatus = status) } }
+        val resolvedFfmpegPath = ffmpeg.toAbsolutePath().toString()
+        ffmpegPath = resolvedFfmpegPath
+        ffmpegManaged = ffmpeg.startsWith(appHome.resolve("tools").resolve("bin"))
+        val ytPath = analyzeYtDlpPath
+        if (ytPath != null) {
+            tools = ToolPaths(
+                ytDlpPath = ytPath,
+                ffmpegPath = resolvedFfmpegPath,
+                ytDlpManaged = ytDlpManaged,
+                ffmpegManaged = ffmpegManaged
+            )
+        }
         update {
             it.copy(
-                ytDlpVersion = ytVersion + if (t.ytDlpManaged) " (app)" else " (system)",
-                ffmpegVersion = ffVersion + if (t.ffmpegManaged) " (app)" else " (system)"
+                ffmpegReady = true,
+                toolsReady = true,
+                toolStatus = "Tools ready",
+                ffmpegVersion = toolManager.getFfmpegVersion(resolvedFfmpegPath) + if (ffmpegManaged) " (app)" else " (system)",
+                logs = (it.logs + "ffmpeg: $resolvedFfmpegPath").takeLast(400)
+            )
+        }
+        return resolvedFfmpegPath
+    }
+
+    private fun refreshInstalledVersions() {
+        val ytPath = analyzeYtDlpPath ?: tools?.ytDlpPath
+        val ffPath = ffmpegPath ?: tools?.ffmpegPath
+        val ytVersion = ytPath?.let { toolManager.getYtDlpVersion(it) }
+        val ffVersion = ffPath?.let { toolManager.getFfmpegVersion(it) }
+        update {
+            it.copy(
+                ytDlpVersion = ytVersion?.let { version -> version + if (ytDlpManaged) " (app)" else " (system)" } ?: it.ytDlpVersion,
+                ffmpegVersion = ffVersion?.let { version -> version + if (ffmpegManaged) " (app)" else " (system)" } ?: it.ffmpegVersion
             )
         }
     }
@@ -407,12 +652,20 @@ class AppViewModel(
         return null
     }
 
-    private fun pickBestFormatId(formats: List<FormatEntry>, kind: FormatKind): String? {
+    private fun pickBestFormatId(
+        formats: List<FormatEntry>,
+        kind: FormatKind,
+        videoCodecPreference: VideoCodecPreference = VideoCodecPreference.ALL
+    ): String? {
         val candidates = when (kind) {
-            FormatKind.VIDEO_AUDIO -> formats.filter { it.kind == FormatKind.VIDEO_AUDIO || it.kind == FormatKind.VIDEO_ONLY }
+            FormatKind.VIDEO_AUDIO -> formats.filter {
+                (it.kind == FormatKind.VIDEO_AUDIO || it.kind == FormatKind.VIDEO_ONLY) &&
+                    it.matchesVideoCodec(videoCodecPreference)
+            }
+            FormatKind.VIDEO_ONLY -> formats.filter { it.kind == kind && it.matchesVideoCodec(videoCodecPreference) }
             else -> formats.filter { it.kind == kind }
         }
-        if (candidates.isEmpty()) return formats.firstOrNull()?.formatId
+        if (candidates.isEmpty()) return null
         return when (kind) {
             FormatKind.VIDEO_AUDIO -> candidates
                 .maxWithOrNull(
@@ -427,12 +680,31 @@ class AppViewModel(
         }
     }
 
-    private fun quickFormatSelector(profile: QuickQualityProfile): String = when (profile) {
-        QuickQualityProfile.BEST -> "bestvideo+bestaudio/best"
-        QuickQualityProfile.UP_TO_2160P -> "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"
-        QuickQualityProfile.UP_TO_1440P -> "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
-        QuickQualityProfile.UP_TO_1080P -> "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
-        QuickQualityProfile.UP_TO_720P -> "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
-        QuickQualityProfile.AUDIO_ONLY -> "bestaudio/best"
+    private fun quickFormatSelector(profile: QuickQualityProfile, codecPreference: VideoCodecPreference): String {
+        val codecFilter = codecSelectorFilter(codecPreference)
+        return when (profile) {
+            QuickQualityProfile.BEST -> "bestvideo+bestaudio/best"
+            QuickQualityProfile.UP_TO_2160P -> "bestvideo${codecFilter}[height<=2160]+bestaudio/best[height<=2160]/best"
+            QuickQualityProfile.UP_TO_1440P -> "bestvideo${codecFilter}[height<=1440]+bestaudio/best[height<=1440]/best"
+            QuickQualityProfile.UP_TO_1080P -> "bestvideo${codecFilter}[height<=1080]+bestaudio/best[height<=1080]/best"
+            QuickQualityProfile.UP_TO_720P -> "bestvideo${codecFilter}[height<=720]+bestaudio/best[height<=720]/best"
+            QuickQualityProfile.AUDIO_ONLY -> "bestaudio/best"
+        }.let {
+            if (profile == QuickQualityProfile.BEST && codecFilter.isNotEmpty()) {
+                "bestvideo$codecFilter+bestaudio/best"
+            } else {
+                it
+            }
+        }
+    }
+
+    private fun codecSelectorFilter(preference: VideoCodecPreference): String {
+        return when (preference) {
+            VideoCodecPreference.ALL -> ""
+            VideoCodecPreference.H264 -> "[vcodec^=avc1]"
+            VideoCodecPreference.H265 -> "[vcodec~='^(hev1|hvc1)']"
+            VideoCodecPreference.AV1 -> "[vcodec^=av01]"
+            VideoCodecPreference.VP9 -> "[vcodec~='^(vp9|vp09)']"
+        }
     }
 }

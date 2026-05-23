@@ -50,7 +50,10 @@ fun main() = application {
 
     val windowState = rememberWindowState(size = DpSize(1360.dp, 860.dp))
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = {
+            viewModel.close()
+            exitApplication()
+        },
         title = "yt-dlpk",
         state = windowState,
         icon = painterResource("icons/icon.png")

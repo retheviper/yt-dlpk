@@ -5,11 +5,19 @@ import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.ProgressInfo
 import com.ytdlpk.app.model.VideoMetadata
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+
+data class AnalyzeResult(
+    val metadata: VideoMetadata,
+    val formats: List<com.ytdlpk.app.model.FormatEntry>
+)
 
 class YtDlpService(
     private val processRunner: ProcessRunner,
@@ -17,12 +25,24 @@ class YtDlpService(
     private val commandBuilder: YtDlpCommandBuilder,
     private val progressParser: ProgressParser
 ) {
+    suspend fun analyze(ytDlpPath: String, url: String, playlistMode: PlaylistMode): AnalyzeResult {
+        return coroutineScope {
+            val metadata = async { analyzeMetadata(ytDlpPath, url, playlistMode) }
+            val formats = async { formatService.fetchFormats(ytDlpPath, url, playlistMode) }
+            AnalyzeResult(
+                metadata = metadata.await(),
+                formats = formats.await()
+            )
+        }
+    }
+
     suspend fun analyzeMetadata(ytDlpPath: String, url: String, playlistMode: PlaylistMode): VideoMetadata {
         val cmd = mutableListOf(
             ytDlpPath,
             "--dump-single-json",
             "--skip-download",
-            "--no-warnings"
+            "--no-warnings",
+            "--playlist-items", "1"
         )
         if (playlistMode == PlaylistMode.SINGLE) {
             cmd += "--no-playlist"
@@ -35,24 +55,19 @@ class YtDlpService(
         }
 
         val obj = Json.parseToJsonElement(result.stdoutLines.joinToString("\n")).jsonObject
-        val entries = obj["entries"]
-        val playlistCount = (entries as? JsonArray)?.size
-        val firstEntry = (entries as? JsonArray)
+        val entries = obj["entries"] as? JsonArray
+        val firstEntry = entries
             ?.firstOrNull()
             ?.jsonObjectOrNull()
 
-        return VideoMetadata(
-            title = obj["title"]?.jsonPrimitive?.content ?: "(unknown)",
-            uploader = obj.stringOrNull("channel") ?: obj.stringOrNull("uploader"),
-            durationSeconds = obj["duration"]?.jsonPrimitive?.content?.toLongOrNull(),
-            thumbnailUrl = obj.stringOrNull("thumbnail")
-                ?: firstEntry?.stringOrNull("thumbnail"),
-            isPlaylist = obj.stringOrNull("_type") == "playlist" || playlistCount != null,
-            playlistCount = playlistCount
-        )
+        return metadataFromJson(obj, firstEntry ?: obj, entries)
     }
 
-    suspend fun analyzeFormats(ytDlpPath: String, url: String) = formatService.fetchFormats(ytDlpPath, url)
+    suspend fun analyzeFormats(
+        ytDlpPath: String,
+        url: String,
+        playlistMode: PlaylistMode = PlaylistMode.PLAYLIST
+    ) = formatService.fetchFormats(ytDlpPath, url, playlistMode)
 
     fun startDownload(
         scope: CoroutineScope,
@@ -81,8 +96,26 @@ class YtDlpService(
     }
 }
 
+private fun metadataFromJson(root: JsonObject, source: JsonObject, entries: JsonArray?): VideoMetadata {
+    val playlistCount = root.intOrNull("playlist_count") ?: entries?.size
+    return VideoMetadata(
+        title = source.stringOrNull("title") ?: root.stringOrNull("title") ?: "(unknown)",
+        uploader = source.stringOrNull("channel") ?: source.stringOrNull("uploader")
+            ?: root.stringOrNull("channel") ?: root.stringOrNull("uploader"),
+        durationSeconds = source["duration"]?.jsonPrimitive?.content?.toLongOrNull()
+            ?: root["duration"]?.jsonPrimitive?.content?.toLongOrNull(),
+        thumbnailUrl = source.stringOrNull("thumbnail") ?: root.stringOrNull("thumbnail"),
+        isPlaylist = root.stringOrNull("_type") == "playlist" || entries != null,
+        playlistCount = playlistCount
+    )
+}
+
 private fun kotlinx.serialization.json.JsonObject.stringOrNull(key: String): String? {
     return runCatching { this[key]?.jsonPrimitive?.content }.getOrNull()
+}
+
+private fun kotlinx.serialization.json.JsonObject.intOrNull(key: String): Int? {
+    return runCatching { this[key]?.jsonPrimitive?.intOrNull }.getOrNull()
 }
 
 private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull(): JsonObject? {

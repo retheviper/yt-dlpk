@@ -13,6 +13,10 @@ import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.BufferedInputStream
 import java.io.FileInputStream
 import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse.BodyHandlers
+import java.time.Duration
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
@@ -38,25 +42,101 @@ private data class ExecProbe(
     val details: String
 )
 
+data class SystemToolUpdateResult(
+    val updated: Boolean,
+    val message: String
+)
+
 class ToolManager(
     private val appHome: Path,
     private val resourceLoader: (String) -> String
 ) {
     private val toolProbeTimeoutSeconds = 60L
+    private val networkTimeout = Duration.ofSeconds(30)
+    private val httpClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .followRedirects(HttpClient.Redirect.ALWAYS)
+        .build()
 
     private val toolsRoot = appHome.resolve("tools")
     private val binDir = toolsRoot.resolve("bin")
 
-    suspend fun ensureTools(onStatus: (String) -> Unit): ToolPaths {
-        return resolveTools(onStatus, forceManagedYtDlp = false, forceManagedFfmpeg = false)
+    suspend fun ensureYtDlp(onStatus: (String) -> Unit): Path {
+        return withContext(Dispatchers.IO) {
+            binDir.createDirectories()
+            val os = detectOs()
+            val sources = parseToolSources(resourceLoader("tool-sources.json"))
+            val ytDlpName = if (os == "windows") "yt-dlp.exe" else "yt-dlp"
+            val ytDlpPath = binDir.resolve(ytDlpName)
+
+            resolveExistingBinary(ytDlpPath, ytDlpName, "--version") ?: run {
+                onStatus("Downloading yt-dlp...")
+                val ytDlpCandidates = buildYtDlpCandidates(os, sources)
+                downloadExecutableBinary(ytDlpCandidates, ytDlpPath, "--version", os)
+                ytDlpPath
+            }
+        }
+    }
+
+    suspend fun ensureFfmpeg(onStatus: (String) -> Unit): Path {
+        return withContext(Dispatchers.IO) {
+            binDir.createDirectories()
+            val os = detectOs()
+            val arch = detectArch()
+            val sources = parseToolSources(resourceLoader("tool-sources.json"))
+            val ffmpegName = if (os == "windows") "ffmpeg.exe" else "ffmpeg"
+            val ffmpegPath = binDir.resolve(ffmpegName)
+
+            resolveExistingBinary(ffmpegPath, ffmpegName, "-version") ?: run {
+                onStatus("Downloading ffmpeg...")
+                val archivePath = toolsRoot.resolve(if (os == "linux") "ffmpeg.tar.xz" else "ffmpeg.zip")
+                val ffmpegCandidates = buildFfmpegCandidates(os, arch, sources)
+                downloadBinary(ffmpegCandidates, archivePath)
+                onStatus("Extracting ffmpeg...")
+                if (archivePath.name.endsWith(".zip")) {
+                    extractZip(archivePath, toolsRoot)
+                } else {
+                    extractTarXz(archivePath, toolsRoot)
+                }
+                val found = findBinary(toolsRoot, ffmpegName)
+                    ?: error("ffmpeg binary not found after extraction")
+                Files.copy(found, ffmpegPath, StandardCopyOption.REPLACE_EXISTING)
+                makeExecutable(ffmpegPath, os)
+                requireExecutable(ffmpegPath, "-version")
+                ffmpegPath
+            }
+        }
+    }
+
+    suspend fun ensureTools(
+        onStatus: (String) -> Unit,
+        onYtDlpReady: (Path) -> Unit = {}
+    ): ToolPaths {
+        val ytDlp = ensureYtDlp(onStatus)
+        onYtDlpReady(ytDlp)
+        val ffmpeg = ensureFfmpeg(onStatus)
+        return ToolPaths(
+            ytDlpPath = ytDlp.toAbsolutePath().toString(),
+            ffmpegPath = ffmpeg.toAbsolutePath().toString(),
+            ytDlpManaged = ytDlp.startsWith(binDir),
+            ffmpegManaged = ffmpeg.startsWith(binDir)
+        )
     }
 
     suspend fun updateManagedYtDlp(onStatus: (String) -> Unit): ToolPaths {
-        return resolveTools(onStatus, forceManagedYtDlp = true, forceManagedFfmpeg = false)
+        return resolveTools(
+            onStatus = onStatus,
+            forceManagedYtDlp = true,
+            forceManagedFfmpeg = false
+        )
     }
 
     suspend fun updateManagedFfmpeg(onStatus: (String) -> Unit): ToolPaths {
-        return resolveTools(onStatus, forceManagedYtDlp = false, forceManagedFfmpeg = true)
+        return resolveTools(
+            onStatus = onStatus,
+            forceManagedYtDlp = false,
+            forceManagedFfmpeg = true
+        )
     }
 
     fun getYtDlpVersion(path: String): String {
@@ -76,18 +156,62 @@ class ToolManager(
     }
 
     suspend fun getLatestFfmpegVersion(): String = withContext(Dispatchers.IO) {
-        val url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
         runCatching {
-            val json = readTextFromUrl(url)
-            Json.parseToJsonElement(json).jsonObject["tag_name"]?.jsonPrimitive?.content ?: "-"
-        }.getOrDefault("-")
+            val json = readTextFromUrl("https://evermeet.cx/ffmpeg/info/ffmpeg/release")
+            Json.parseToJsonElement(json).jsonObject["version"]?.jsonPrimitive?.content ?: "-"
+        }.getOrElse {
+            runCatching {
+                val json = readTextFromUrl("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest")
+                Json.parseToJsonElement(json).jsonObject["tag_name"]?.jsonPrimitive?.content ?: "-"
+            }.getOrDefault("-")
+        }
+    }
+
+    fun compareVersions(current: String, latest: String): Int? {
+        val currentParts = versionParts(current)
+        val latestParts = versionParts(latest)
+        if (currentParts.isEmpty() || latestParts.isEmpty()) return null
+
+        val maxSize = maxOf(currentParts.size, latestParts.size)
+        for (index in 0 until maxSize) {
+            val currentPart = currentParts.getOrElse(index) { 0 }
+            val latestPart = latestParts.getOrElse(index) { 0 }
+            if (currentPart != latestPart) return currentPart.compareTo(latestPart)
+        }
+        return 0
+    }
+
+    suspend fun updateSystemYtDlp(path: String, onStatus: (String) -> Unit): SystemToolUpdateResult {
+        return updateSystemTool(
+            toolName = "yt-dlp",
+            binaryPath = path,
+            selfUpdateArgs = listOf(path, "-U"),
+            homebrewFormula = "yt-dlp",
+            wingetPackage = "yt-dlp.yt-dlp",
+            chocoPackage = "yt-dlp",
+            scoopPackage = "yt-dlp",
+            onStatus = onStatus
+        )
+    }
+
+    suspend fun updateSystemFfmpeg(path: String, onStatus: (String) -> Unit): SystemToolUpdateResult {
+        return updateSystemTool(
+            toolName = "ffmpeg",
+            binaryPath = path,
+            selfUpdateArgs = null,
+            homebrewFormula = "ffmpeg",
+            wingetPackage = "Gyan.FFmpeg",
+            chocoPackage = "ffmpeg",
+            scoopPackage = "ffmpeg",
+            onStatus = onStatus
+        )
     }
 
     private suspend fun resolveTools(
         onStatus: (String) -> Unit,
         forceManagedYtDlp: Boolean,
         forceManagedFfmpeg: Boolean
-    ): ToolPaths {
+    ): ToolPaths = withContext(Dispatchers.IO) {
         binDir.createDirectories()
         val os = detectOs()
         val arch = detectArch()
@@ -133,7 +257,7 @@ class ToolManager(
             ffmpegPath
         }
 
-        return ToolPaths(
+        ToolPaths(
             ytDlpPath = resolvedYtDlp.toAbsolutePath().toString(),
             ffmpegPath = resolvedFfmpeg.toAbsolutePath().toString(),
             ytDlpManaged = resolvedYtDlp.startsWith(binDir),
@@ -158,20 +282,133 @@ class ToolManager(
         }
     }
 
+    private suspend fun updateSystemTool(
+        toolName: String,
+        binaryPath: String,
+        selfUpdateArgs: List<String>?,
+        homebrewFormula: String,
+        wingetPackage: String,
+        chocoPackage: String,
+        scoopPackage: String,
+        onStatus: (String) -> Unit
+    ): SystemToolUpdateResult = withContext(Dispatchers.IO) {
+        val os = detectOs()
+        val commands = buildList {
+            val brew = findInPath("brew")
+            if (brew != null && isLikelyHomebrewBinary(binaryPath)) {
+                add(listOf(brew.toString(), "upgrade", homebrewFormula))
+            }
+            if (os == "windows") {
+                findInPath("winget")?.let {
+                    add(listOf(it.toString(), "upgrade", "--id", wingetPackage, "--silent", "--accept-package-agreements", "--accept-source-agreements"))
+                }
+                findInPath("choco")?.let { add(listOf(it.toString(), "upgrade", chocoPackage, "-y")) }
+                findInPath("scoop")?.let { add(listOf(it.toString(), "update", scoopPackage)) }
+            }
+            if (selfUpdateArgs != null) {
+                add(selfUpdateArgs)
+            }
+        }
+
+        if (commands.isEmpty()) {
+            return@withContext SystemToolUpdateResult(
+                updated = false,
+                message = systemUpdateInstructions(toolName)
+            )
+        }
+
+        val errors = mutableListOf<String>()
+        for (command in commands) {
+            onStatus("Updating $toolName...")
+            val result = runCommand(command, timeoutSeconds = 600)
+            if (result.exitCode == 0) {
+                return@withContext SystemToolUpdateResult(
+                    updated = true,
+                    message = result.output.lineSequence().lastOrNull { it.isNotBlank() } ?: "$toolName update finished."
+                )
+            }
+            errors += "${command.joinToString(" ")} -> ${result.output.take(600)}"
+        }
+
+        SystemToolUpdateResult(
+            updated = false,
+            message = buildString {
+                append(systemUpdateInstructions(toolName))
+                if (errors.isNotEmpty()) append("\n\nLast failure:\n${errors.last()}")
+            }
+        )
+    }
+
+    private data class CommandResult(
+        val exitCode: Int,
+        val output: String
+    )
+
+    private fun runCommand(command: List<String>, timeoutSeconds: Long): CommandResult {
+        return try {
+            val process = ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
+            val outputBuffer = StringBuilder()
+            val outputCollector = Thread {
+                runCatching {
+                    process.inputStream.bufferedReader().use { outputBuffer.append(it.readText()) }
+                }
+            }.apply { isDaemon = true; start() }
+
+            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                process.waitFor(2, TimeUnit.SECONDS)
+                return CommandResult(exitCode = -1, output = "timeout")
+            }
+            outputCollector.join(2000)
+            CommandResult(process.exitValue(), outputBuffer.toString().trim())
+        } catch (t: Throwable) {
+            CommandResult(exitCode = -1, output = t.message ?: t::class.simpleName.orEmpty())
+        }
+    }
+
+    private fun versionParts(value: String): List<Int> {
+        return Regex("""\d+""")
+            .findAll(value)
+            .mapNotNull { it.value.toIntOrNull() }
+            .toList()
+    }
+
+    private fun isLikelyHomebrewBinary(path: String): Boolean {
+        return path.startsWith("/opt/homebrew/") ||
+            path.startsWith("/usr/local/") ||
+            path.contains("/linuxbrew/")
+    }
+
+    private fun systemUpdateInstructions(toolName: String): String {
+        return when (detectOs()) {
+            "mac" -> "Could not update system $toolName automatically. If it was installed with Homebrew, run: brew upgrade $toolName"
+            "windows" -> "Could not update system $toolName automatically. Try winget, Chocolatey, or Scoop for your installation source."
+            else -> "Could not update system $toolName automatically. Update it with your distro package manager or install the app-managed tool."
+        }
+    }
+
     private fun downloadBinary(urls: List<String>, target: Path) {
         target.parent.createDirectories()
         val errors = mutableListOf<String>()
+        val temp = target.resolveSibling("${target.fileName}.download")
         for (url in urls) {
             runCatching {
-                URI.create(url).toURL().openStream().use { input ->
-                    target.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
+                Files.deleteIfExists(temp)
+                downloadToPath(url, temp)
+                runCatching {
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, ATOMIC_MOVE)
+                }.getOrElse {
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
                 }
             }.onSuccess {
                 return
             }.onFailure { e ->
                 errors += "$url -> ${e.message}"
+            }.also {
+                runCatching { Files.deleteIfExists(temp) }
             }
         }
         error("Failed to download from all candidates:\n${errors.joinToString("\n")}")
@@ -186,9 +423,7 @@ class ToolManager(
             runCatching {
                 Files.deleteIfExists(temp)
                 Files.deleteIfExists(payload)
-                URI.create(url).toURL().openStream().use { input ->
-                    payload.outputStream().use { output -> input.copyTo(output) }
-                }
+                downloadToPath(url, payload)
                 if (url.endsWith(".zip") && os == "mac") {
                     installMacYtDlpFromZip(payload, target)
                     val probe = probeExecutable(target, checkArg)
@@ -273,7 +508,7 @@ class ToolManager(
     private fun extractTarXz(archive: Path, destination: Path) {
         val destinationRoot = destination.toAbsolutePath().normalize()
         TarArchiveInputStream(XZCompressorInputStream(BufferedInputStream(FileInputStream(archive.toFile())))).use { tar ->
-            var entry: TarArchiveEntry? = tar.nextEntry as? TarArchiveEntry
+            var entry: TarArchiveEntry? = tar.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
                     val out = destinationRoot.resolve(entry.name).normalize()
@@ -283,7 +518,7 @@ class ToolManager(
                     out.parent?.createDirectories()
                     out.outputStream().use { output -> tar.copyTo(output) }
                 }
-                entry = tar.nextEntry as? TarArchiveEntry
+                entry = tar.nextEntry
             }
         }
     }
@@ -299,14 +534,14 @@ class ToolManager(
 
     private fun resolveExistingBinary(appBinary: Path, commandName: String, checkArg: String): Path? {
         val os = detectOs()
+        val fromPath = findInPath(commandName)
+        if (fromPath != null && isExecutable(fromPath, checkArg)) {
+            return fromPath
+        }
         if (appBinary.exists()) {
             if (isExecutable(appBinary, checkArg)) return appBinary
             makeExecutable(appBinary, os)
             if (isExecutable(appBinary, checkArg)) return appBinary
-        }
-        val fromPath = findInPath(commandName)
-        if (fromPath != null && isExecutable(fromPath, checkArg)) {
-            return fromPath
         }
         return null
     }
@@ -451,7 +686,27 @@ class ToolManager(
     }
 
     private fun readTextFromUrl(url: String): String {
-        return URI.create(url).toURL().openStream().bufferedReader().use { it.readText() }
+        val request = HttpRequest.newBuilder(URI.create(url))
+            .timeout(networkTimeout)
+            .header("User-Agent", "yt-dlpk")
+            .GET()
+            .build()
+        val response = httpClient.send(request, BodyHandlers.ofString())
+        check(response.statusCode() in 200..299) { "HTTP ${response.statusCode()} from $url" }
+        return response.body()
+    }
+
+    private fun downloadToPath(url: String, target: Path) {
+        val request = HttpRequest.newBuilder(URI.create(url))
+            .timeout(networkTimeout)
+            .header("User-Agent", "yt-dlpk")
+            .GET()
+            .build()
+        val response = httpClient.send(request, BodyHandlers.ofFile(target))
+        if (response.statusCode() !in 200..299) {
+            Files.deleteIfExists(target)
+            error("HTTP ${response.statusCode()} from $url")
+        }
     }
 
     private fun parseToolSources(jsonText: String): ToolSources {
