@@ -829,7 +829,7 @@ private fun BottomActionBar(state: AppState, viewModel: AppViewModel, p: Palette
             onClick = { viewModel.download() },
             enabled = !state.isDownloading &&
                 !state.isAnalyzing &&
-                state.toolsReady &&
+                state.ytDlpReady &&
                 state.metadata != null &&
                 state.formats.isNotEmpty() &&
                 state.selectedFormatId != null,
@@ -853,7 +853,7 @@ private fun QuickBottomActionBar(state: AppState, viewModel: AppViewModel, p: Pa
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { viewModel.quickDownload() },
-            enabled = !state.isDownloading && !state.isAnalyzing && state.toolsReady && state.url.isNotBlank(),
+            enabled = !state.isDownloading && !state.isAnalyzing && state.ytDlpReady && state.url.isNotBlank(),
             colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF4CAF50), contentColor = Color.White)
         ) { Text(s.quickDownload) }
     }

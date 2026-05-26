@@ -35,6 +35,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 
@@ -61,6 +63,7 @@ class AppViewModel(
     private var runningProcess: RunningProcess? = null
     private var lastAnalyzeCacheKey: AnalyzeCacheKey? = null
     private var lastAnalyzeResult: AnalyzeResult? = null
+    private val ffmpegEnsureMutex = Mutex()
 
     init {
         appHome.createDirectories()
@@ -533,77 +536,98 @@ class AppViewModel(
 
     private fun ensureTools() {
         scope.launch {
-            try {
-                update { it.copy(toolStatus = "Checking yt-dlp...") }
-                val ytDlp = toolManager.ensureYtDlp { status -> update { state -> state.copy(toolStatus = status) } }
-                analyzeYtDlpPath = ytDlp.toAbsolutePath().toString()
-                ytDlpManaged = ytDlp.startsWith(appHome.resolve("tools").resolve("bin"))
-                update {
-                    it.copy(
-                        ytDlpReady = true,
-                        toolStatus = "yt-dlp ready",
-                        ytDlpVersion = toolManager.getYtDlpVersion(analyzeYtDlpPath!!) + if (ytDlpManaged) " (app)" else " (system)",
-                        logs = (it.logs + "yt-dlp: $analyzeYtDlpPath").takeLast(400)
-                    )
+            supervisorScope {
+                val ytDlpJob = launch { ensureYtDlpReady() }
+                val ffmpegJob = launch {
+                    runCatching {
+                        ensureFfmpegReady()
+                    }.onFailure { e ->
+                        update {
+                            it.copy(
+                                ffmpegReady = false,
+                                toolsReady = false,
+                                toolStatus = "ffmpeg setup failed",
+                                lastError = e.message,
+                                logs = (it.logs + "ffmpeg setup failed: ${e.message}").takeLast(400)
+                            )
+                        }
+                    }
                 }
-            } catch (e: Throwable) {
-                update {
-                    it.copy(
-                        ytDlpReady = false,
-                        toolsReady = false,
-                        toolStatus = "Tool setup failed",
-                        lastError = e.message,
-                        logs = (it.logs + "Tool setup failed: ${e.message}").takeLast(400)
-                    )
-                }
+                joinAll(ytDlpJob, ffmpegJob)
             }
         }
     }
 
-    private fun prepareFfmpegInBackground() {
-        scope.launch {
-            runCatching {
-                ensureFfmpegReady()
-            }.onFailure { e ->
-                update {
-                    it.copy(
-                        ffmpegReady = false,
-                        toolsReady = false,
-                        toolStatus = "ffmpeg setup failed",
-                        lastError = e.message,
-                        logs = (it.logs + "ffmpeg setup failed: ${e.message}").takeLast(400)
-                    )
-                }
+    private suspend fun ensureYtDlpReady(): String {
+        analyzeYtDlpPath?.let { return it }
+        return try {
+            update { it.copy(toolStatus = "Checking yt-dlp...") }
+            val ytDlp = toolManager.ensureYtDlp { status -> update { state -> state.copy(toolStatus = status) } }
+            val resolvedYtDlpPath = ytDlp.toAbsolutePath().toString()
+            analyzeYtDlpPath = resolvedYtDlpPath
+            ytDlpManaged = ytDlp.startsWith(appHome.resolve("tools").resolve("bin"))
+            val resolvedFfmpegPath = ffmpegPath
+            if (resolvedFfmpegPath != null) {
+                tools = ToolPaths(
+                    ytDlpPath = resolvedYtDlpPath,
+                    ffmpegPath = resolvedFfmpegPath,
+                    ytDlpManaged = ytDlpManaged,
+                    ffmpegManaged = ffmpegManaged
+                )
             }
+            update {
+                it.copy(
+                    ytDlpReady = true,
+                    toolsReady = resolvedFfmpegPath != null,
+                    toolStatus = if (resolvedFfmpegPath != null) "Tools ready" else "yt-dlp ready",
+                    ytDlpVersion = toolManager.getYtDlpVersion(resolvedYtDlpPath) + if (ytDlpManaged) " (app)" else " (system)",
+                    logs = (it.logs + "yt-dlp: $resolvedYtDlpPath").takeLast(400)
+                )
+            }
+            resolvedYtDlpPath
+        } catch (e: Throwable) {
+            update {
+                it.copy(
+                    ytDlpReady = false,
+                    toolsReady = false,
+                    toolStatus = "Tool setup failed",
+                    lastError = e.message,
+                    logs = (it.logs + "Tool setup failed: ${e.message}").takeLast(400)
+                )
+            }
+            throw e
         }
     }
 
     private suspend fun ensureFfmpegReady(): String {
         ffmpegPath?.let { return it }
-        update { it.copy(toolStatus = "Checking ffmpeg...") }
-        val ffmpeg = toolManager.ensureFfmpeg { status -> update { state -> state.copy(toolStatus = status) } }
-        val resolvedFfmpegPath = ffmpeg.toAbsolutePath().toString()
-        ffmpegPath = resolvedFfmpegPath
-        ffmpegManaged = ffmpeg.startsWith(appHome.resolve("tools").resolve("bin"))
-        val ytPath = analyzeYtDlpPath
-        if (ytPath != null) {
-            tools = ToolPaths(
-                ytDlpPath = ytPath,
-                ffmpegPath = resolvedFfmpegPath,
-                ytDlpManaged = ytDlpManaged,
-                ffmpegManaged = ffmpegManaged
-            )
+        return ffmpegEnsureMutex.withLock {
+            ffmpegPath?.let { return@withLock it }
+            update { it.copy(toolStatus = "Checking ffmpeg...") }
+            val ffmpeg = toolManager.ensureFfmpeg { status -> update { state -> state.copy(toolStatus = status) } }
+            val resolvedFfmpegPath = ffmpeg.toAbsolutePath().toString()
+            ffmpegPath = resolvedFfmpegPath
+            ffmpegManaged = ffmpeg.startsWith(appHome.resolve("tools").resolve("bin"))
+            val ytPath = analyzeYtDlpPath
+            if (ytPath != null) {
+                tools = ToolPaths(
+                    ytDlpPath = ytPath,
+                    ffmpegPath = resolvedFfmpegPath,
+                    ytDlpManaged = ytDlpManaged,
+                    ffmpegManaged = ffmpegManaged
+                )
+            }
+            update {
+                it.copy(
+                    ffmpegReady = true,
+                    toolsReady = ytPath != null,
+                    toolStatus = if (ytPath != null) "Tools ready" else "ffmpeg ready",
+                    ffmpegVersion = toolManager.getFfmpegVersion(resolvedFfmpegPath) + if (ffmpegManaged) " (app)" else " (system)",
+                    logs = (it.logs + "ffmpeg: $resolvedFfmpegPath").takeLast(400)
+                )
+            }
+            resolvedFfmpegPath
         }
-        update {
-            it.copy(
-                ffmpegReady = true,
-                toolsReady = true,
-                toolStatus = "Tools ready",
-                ffmpegVersion = toolManager.getFfmpegVersion(resolvedFfmpegPath) + if (ffmpegManaged) " (app)" else " (system)",
-                logs = (it.logs + "ffmpeg: $resolvedFfmpegPath").takeLast(400)
-            )
-        }
-        return resolvedFfmpegPath
     }
 
     private fun refreshInstalledVersions() {

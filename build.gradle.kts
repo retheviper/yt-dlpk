@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+version = "1.0.2"
+
 kotlin {
     jvm("desktop")
 
@@ -50,7 +52,7 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
             )
             packageName = "yt-dlpk"
-            packageVersion = "1.0.1"
+            packageVersion = project.version.toString()
             vendor = "yt-dlpk"
             description = "yt-dlp GUI desktop app built with Kotlin + Compose"
             modules("java.net.http", "java.sql")
