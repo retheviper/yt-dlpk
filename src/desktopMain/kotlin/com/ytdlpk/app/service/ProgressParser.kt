@@ -17,12 +17,12 @@ class ProgressParser {
             return current.copy(currentFile = destinationMatch.groupValues[1])
         }
 
-        val progressMatch = DOWNLOAD_REGEX.find(line)
+        val progressMatch = DOWNLOAD_PERCENT_REGEX.find(line)
         if (progressMatch != null) {
             return current.copy(
                 percent = progressMatch.groupValues[1].toDoubleOrNull(),
-                speed = progressMatch.groupValues[2].ifBlank { null },
-                eta = progressMatch.groupValues[3].ifBlank { null }
+                speed = DOWNLOAD_SPEED_REGEX.find(line)?.groupValues?.get(1),
+                eta = DOWNLOAD_ETA_REGEX.find(line)?.groupValues?.get(1)
             )
         }
 
@@ -32,6 +32,8 @@ class ProgressParser {
     companion object {
         private val ITEM_REGEX = Regex("Downloading item (\\d+) of (\\d+)")
         private val DEST_REGEX = Regex("Destination:\\s+(.+)$")
-        private val DOWNLOAD_REGEX = Regex("\\[download]\\s+(\\d+(?:\\.\\d+)?)%.*?at\\s+([^\\s]+).*?ETA\\s+([^\\s]+)")
+        private val DOWNLOAD_PERCENT_REGEX = Regex("\\[download]\\s+(\\d+(?:\\.\\d+)?)%")
+        private val DOWNLOAD_SPEED_REGEX = Regex("\\sat\\s+([^\\s]+)")
+        private val DOWNLOAD_ETA_REGEX = Regex("ETA\\s+([^\\s]+)")
     }
 }

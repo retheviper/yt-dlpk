@@ -93,17 +93,7 @@ class ToolManager(
                 val ffmpegCandidates = buildFfmpegCandidates(os, arch, sources)
                 downloadBinary(ffmpegCandidates, archivePath)
                 onStatus("Extracting ffmpeg...")
-                if (archivePath.name.endsWith(".zip")) {
-                    extractZip(archivePath, toolsRoot)
-                } else {
-                    extractTarXz(archivePath, toolsRoot)
-                }
-                val found = findBinary(toolsRoot, ffmpegName)
-                    ?: error("ffmpeg binary not found after extraction")
-                Files.copy(found, ffmpegPath, StandardCopyOption.REPLACE_EXISTING)
-                makeExecutable(ffmpegPath, os)
-                requireExecutable(ffmpegPath, "-version")
-                ffmpegPath
+                installFfmpegArchive(archivePath, ffmpegPath, ffmpegName, os)
             }
         }
     }
@@ -244,17 +234,7 @@ class ToolManager(
             val ffmpegCandidates = buildFfmpegCandidates(os, arch, sources)
             downloadBinary(ffmpegCandidates, archivePath)
             onStatus("Extracting ffmpeg...")
-            if (archivePath.name.endsWith(".zip")) {
-                extractZip(archivePath, toolsRoot)
-            } else {
-                extractTarXz(archivePath, toolsRoot)
-            }
-            val found = findBinary(toolsRoot, ffmpegName)
-                ?: error("ffmpeg binary not found after extraction")
-            Files.copy(found, ffmpegPath, StandardCopyOption.REPLACE_EXISTING)
-            makeExecutable(ffmpegPath, os)
-            requireExecutable(ffmpegPath, "-version")
-            ffmpegPath
+            installFfmpegArchive(archivePath, ffmpegPath, ffmpegName, os)
         }
 
         ToolPaths(
@@ -270,13 +250,20 @@ class ToolManager(
             val process = ProcessBuilder(binaryPath, arg)
                 .redirectErrorStream(true)
                 .start()
+            val outputBuffer = StringBuilder()
+            val outputCollector = Thread {
+                runCatching {
+                    process.inputStream.bufferedReader().use { outputBuffer.append(it.readText()) }
+                }
+            }.apply { isDaemon = true; start() }
             val finished = process.waitFor(toolProbeTimeoutSeconds, TimeUnit.SECONDS)
             if (!finished) {
                 process.destroyForcibly()
                 process.waitFor(2, TimeUnit.SECONDS)
                 return null
             }
-            process.inputStream.bufferedReader().useLines { lines -> lines.firstOrNull() }
+            outputCollector.join(2000)
+            outputBuffer.toString().lineSequence().firstOrNull()
         } catch (_: Throwable) {
             null
         }
@@ -486,6 +473,26 @@ class ToolManager(
         outBinary.writeBytes(bytes)
     }
 
+    private fun installFfmpegArchive(archivePath: Path, target: Path, binaryName: String, os: String): Path {
+        val extractDir = Files.createTempDirectory(toolsRoot, "ffmpeg-extract-")
+        return try {
+            if (archivePath.name.endsWith(".zip")) {
+                extractZip(archivePath, extractDir)
+            } else {
+                extractTarXz(archivePath, extractDir)
+            }
+            val found = findBinary(extractDir, binaryName)
+                ?: error("ffmpeg binary not found after extraction")
+            Files.copy(found, target, StandardCopyOption.REPLACE_EXISTING)
+            makeExecutable(target, os)
+            requireExecutable(target, "-version")
+            target
+        } finally {
+            deleteRecursively(extractDir)
+            runCatching { Files.deleteIfExists(archivePath) }
+        }
+    }
+
     private fun extractZip(archive: Path, destination: Path) {
         val destinationRoot = destination.toAbsolutePath().normalize()
         ZipInputStream(BufferedInputStream(archive.inputStream())).use { zip ->
@@ -529,6 +536,15 @@ class ToolManager(
                 .filter { Files.isRegularFile(it) && it.fileName.toString() == name }
                 .findFirst()
                 .orElse(null)
+        }
+    }
+
+    private fun deleteRecursively(root: Path) {
+        if (!Files.exists(root)) return
+        Files.walk(root).use { stream ->
+            stream.sorted(Comparator.reverseOrder()).forEach { path ->
+                runCatching { Files.deleteIfExists(path) }
+            }
         }
     }
 

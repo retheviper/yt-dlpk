@@ -5,8 +5,6 @@ import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.ProgressInfo
 import com.ytdlpk.app.model.VideoMetadata
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -26,17 +24,24 @@ class YtDlpService(
     private val progressParser: ProgressParser
 ) {
     suspend fun analyze(ytDlpPath: String, url: String, playlistMode: PlaylistMode): AnalyzeResult {
-        return coroutineScope {
-            val metadata = async { analyzeMetadata(ytDlpPath, url, playlistMode) }
-            val formats = async { formatService.fetchFormats(ytDlpPath, url, playlistMode) }
-            AnalyzeResult(
-                metadata = metadata.await(),
-                formats = formats.await()
-            )
-        }
+        val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode)
+        val source = json.firstEntry ?: json.root
+        return AnalyzeResult(
+            metadata = metadataFromJson(json.root, source, json.entries),
+            formats = formatService.parseFormatJson(source["formats"] as? JsonArray ?: json.root["formats"] as? JsonArray)
+        )
     }
 
     suspend fun analyzeMetadata(ytDlpPath: String, url: String, playlistMode: PlaylistMode): VideoMetadata {
+        val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode)
+        return metadataFromJson(json.root, json.firstEntry ?: json.root, json.entries)
+    }
+
+    private suspend fun fetchAnalyzeJson(
+        ytDlpPath: String,
+        url: String,
+        playlistMode: PlaylistMode
+    ): AnalyzeJson {
         val cmd = mutableListOf(
             ytDlpPath,
             "--dump-single-json",
@@ -60,7 +65,7 @@ class YtDlpService(
             ?.firstOrNull()
             ?.jsonObjectOrNull()
 
-        return metadataFromJson(obj, firstEntry ?: obj, entries)
+        return AnalyzeJson(root = obj, entries = entries, firstEntry = firstEntry)
     }
 
     suspend fun analyzeFormats(
@@ -95,6 +100,12 @@ class YtDlpService(
         )
     }
 }
+
+private data class AnalyzeJson(
+    val root: JsonObject,
+    val entries: JsonArray?,
+    val firstEntry: JsonObject?
+)
 
 private fun metadataFromJson(root: JsonObject, source: JsonObject, entries: JsonArray?): VideoMetadata {
     val playlistCount = root.intOrNull("playlist_count") ?: entries?.size

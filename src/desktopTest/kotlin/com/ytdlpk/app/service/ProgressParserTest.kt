@@ -34,6 +34,16 @@ class ProgressParserTest : StringSpec({
         parsed.eta shouldBe "00:12"
     }
 
+    "parses completed download line without speed or eta" {
+        val current = ProgressInfo(98.0, "1.0MiB/s", "00:01", null, null, null)
+
+        val parsed = parser.parse("[download] 100% of 12.3MiB in 00:05", current)
+
+        parsed.percent shouldBe 100.0
+        parsed.speed shouldBe null
+        parsed.eta shouldBe null
+    }
+
     "returns current state for unrelated lines" {
         val current = ProgressInfo(12.0, "1.0MiB/s", "00:04", "a.mp4", 1, 3)
 

@@ -37,6 +37,7 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 
@@ -55,14 +56,15 @@ class AppViewModel(
     private val _state = MutableStateFlow(AppState(settings = settingsRepository.load()))
     val state: StateFlow<AppState> = _state.asStateFlow()
 
-    private var tools: ToolPaths? = null
-    private var analyzeYtDlpPath: String? = null
-    private var ffmpegPath: String? = null
-    private var ytDlpManaged: Boolean = false
-    private var ffmpegManaged: Boolean = false
-    private var runningProcess: RunningProcess? = null
-    private var lastAnalyzeCacheKey: AnalyzeCacheKey? = null
-    private var lastAnalyzeResult: AnalyzeResult? = null
+    @Volatile private var tools: ToolPaths? = null
+    @Volatile private var analyzeYtDlpPath: String? = null
+    @Volatile private var ffmpegPath: String? = null
+    @Volatile private var ytDlpManaged: Boolean = false
+    @Volatile private var ffmpegManaged: Boolean = false
+    @Volatile private var runningProcess: RunningProcess? = null
+    @Volatile private var downloadCancelRequested: Boolean = false
+    @Volatile private var lastAnalyzeCacheKey: AnalyzeCacheKey? = null
+    @Volatile private var lastAnalyzeResult: AnalyzeResult? = null
     private val ffmpegEnsureMutex = Mutex()
 
     init {
@@ -275,57 +277,15 @@ class AppViewModel(
                 )
             }
             try {
-                supervisorScope {
-                    var metadata: VideoMetadata? = null
-                    var formats: List<FormatEntry>? = null
-                    var firstFailure: Throwable? = null
-
-                    val metadataJob = launch {
-                        runCatching {
-                            ytDlpService.analyzeMetadata(ytDlpPath, url, snapshot.playlistMode)
-                        }
-                            .onSuccess { result ->
-                                metadata = result
-                                update { state ->
-                                    state.copy(
-                                        metadata = result,
-                                        logs = (state.logs + "Metadata loaded").takeLast(400)
-                                    )
-                                }
-                            }
-                            .onFailure { firstFailure = it }
-                    }
-                    val formatsJob = launch {
-                        runCatching {
-                            ytDlpService.analyzeFormats(ytDlpPath, url, snapshot.playlistMode)
-                        }
-                            .onSuccess { result ->
-                                formats = result
-                                applyFormats(
-                                    formats = result,
-                                    settings = snapshot.settings,
-                                    logMessage = "Formats loaded: ${result.size} formats"
-                                )
-                            }
-                            .onFailure { if (firstFailure == null) firstFailure = it }
-                    }
-
-                    joinAll(metadataJob, formatsJob)
-
-                    val loadedMetadata = metadata
-                    val loadedFormats = formats
-                    if (loadedMetadata != null && loadedFormats != null) {
-                        lastAnalyzeCacheKey = cacheKey
-                        lastAnalyzeResult = AnalyzeResult(loadedMetadata, loadedFormats)
-                        update { state ->
-                            state.copy(
-                                logs = (state.logs + "Analyze complete: ${loadedFormats.size} formats").takeLast(400)
-                            )
-                        }
-                    } else {
-                        firstFailure?.let { throw it }
-                    }
-                }
+                val result = ytDlpService.analyze(ytDlpPath, url, snapshot.playlistMode)
+                lastAnalyzeCacheKey = cacheKey
+                lastAnalyzeResult = result
+                applyAnalyzeResult(
+                    metadata = result.metadata,
+                    formats = result.formats,
+                    settings = snapshot.settings,
+                    logMessage = "Analyze complete: ${result.formats.size} formats"
+                )
             } catch (e: Throwable) {
                 update {
                     it.copy(
@@ -473,6 +433,7 @@ class AppViewModel(
     }
 
     fun cancelDownload() {
+        downloadCancelRequested = true
         runningProcess?.cancel()
         runningProcess = null
         update {
@@ -498,16 +459,32 @@ class AppViewModel(
         scope.launch {
             try {
                 val resolvedFfmpegPath = ensureFfmpegReady()
+                if (downloadCancelRequested || !state.value.isDownloading) {
+                    downloadCancelRequested = false
+                    return@launch
+                }
+                downloadCancelRequested = false
+                var lastProgressUpdateNanos = 0L
                 runningProcess = ytDlpService.startDownload(
                     scope = scope,
                     ytDlpPath = ytDlpPath,
                     ffmpegPath = resolvedFfmpegPath,
                     options = options,
-                    onStdoutLine = { addLog(it) },
+                    onStdoutLine = {},
                     onStderrLine = { addLog("[err] $it") },
-                    onProgress = { progress -> update { it.copy(progress = progress) } },
-                    onExit = { code ->
+                    onProgress = { progress ->
+                        val now = System.nanoTime()
+                        if (now - lastProgressUpdateNanos >= PROGRESS_UPDATE_INTERVAL_NANOS || progress.percent == 100.0) {
+                            lastProgressUpdateNanos = now
+                            update { it.copy(progress = progress) }
+                        }
+                    },
+                    onExit = onExit@ { code ->
                         runningProcess = null
+                        if (downloadCancelRequested) {
+                            downloadCancelRequested = false
+                            return@onExit
+                        }
                         val dialogMessage = handleDownloadExit(code)
                         update {
                             it.copy(
@@ -567,6 +544,7 @@ class AppViewModel(
             analyzeYtDlpPath = resolvedYtDlpPath
             ytDlpManaged = ytDlp.startsWith(appHome.resolve("tools").resolve("bin"))
             val resolvedFfmpegPath = ffmpegPath
+            val ytDlpVersion = withContext(Dispatchers.IO) { toolManager.getYtDlpVersion(resolvedYtDlpPath) }
             if (resolvedFfmpegPath != null) {
                 tools = ToolPaths(
                     ytDlpPath = resolvedYtDlpPath,
@@ -580,7 +558,7 @@ class AppViewModel(
                     ytDlpReady = true,
                     toolsReady = resolvedFfmpegPath != null,
                     toolStatus = if (resolvedFfmpegPath != null) "Tools ready" else "yt-dlp ready",
-                    ytDlpVersion = toolManager.getYtDlpVersion(resolvedYtDlpPath) + if (ytDlpManaged) " (app)" else " (system)",
+                    ytDlpVersion = ytDlpVersion + if (ytDlpManaged) " (app)" else " (system)",
                     logs = (it.logs + "yt-dlp: $resolvedYtDlpPath").takeLast(400)
                 )
             }
@@ -609,6 +587,7 @@ class AppViewModel(
             ffmpegPath = resolvedFfmpegPath
             ffmpegManaged = ffmpeg.startsWith(appHome.resolve("tools").resolve("bin"))
             val ytPath = analyzeYtDlpPath
+            val ffmpegVersion = withContext(Dispatchers.IO) { toolManager.getFfmpegVersion(resolvedFfmpegPath) }
             if (ytPath != null) {
                 tools = ToolPaths(
                     ytDlpPath = ytPath,
@@ -622,7 +601,7 @@ class AppViewModel(
                     ffmpegReady = true,
                     toolsReady = ytPath != null,
                     toolStatus = if (ytPath != null) "Tools ready" else "ffmpeg ready",
-                    ffmpegVersion = toolManager.getFfmpegVersion(resolvedFfmpegPath) + if (ffmpegManaged) " (app)" else " (system)",
+                    ffmpegVersion = ffmpegVersion + if (ffmpegManaged) " (app)" else " (system)",
                     logs = (it.logs + "ffmpeg: $resolvedFfmpegPath").takeLast(400)
                 )
             }
@@ -630,11 +609,11 @@ class AppViewModel(
         }
     }
 
-    private fun refreshInstalledVersions() {
+    private suspend fun refreshInstalledVersions() {
         val ytPath = analyzeYtDlpPath ?: tools?.ytDlpPath
         val ffPath = ffmpegPath ?: tools?.ffmpegPath
-        val ytVersion = ytPath?.let { toolManager.getYtDlpVersion(it) }
-        val ffVersion = ffPath?.let { toolManager.getFfmpegVersion(it) }
+        val ytVersion = withContext(Dispatchers.IO) { ytPath?.let { toolManager.getYtDlpVersion(it) } }
+        val ffVersion = withContext(Dispatchers.IO) { ffPath?.let { toolManager.getFfmpegVersion(it) } }
         update {
             it.copy(
                 ytDlpVersion = ytVersion?.let { version -> version + if (ytDlpManaged) " (app)" else " (system)" } ?: it.ytDlpVersion,
@@ -729,5 +708,9 @@ class AppViewModel(
             VideoCodecPreference.AV1 -> "[vcodec^=av01]"
             VideoCodecPreference.VP9 -> "[vcodec~='^(vp9|vp09)']"
         }
+    }
+
+    private companion object {
+        private const val PROGRESS_UPDATE_INTERVAL_NANOS = 150_000_000L
     }
 }

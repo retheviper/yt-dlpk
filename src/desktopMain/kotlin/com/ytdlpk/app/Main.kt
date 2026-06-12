@@ -3,6 +3,7 @@ package com.ytdlpk.app
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -23,30 +24,36 @@ import java.awt.Dimension
 import java.nio.file.Paths
 
 fun main() = application {
-    val appHome = Paths.get(System.getProperty("user.home"), ".yt-dlpk")
-    val processRunner = ProcessRunner()
-    val formatService = FormatService(processRunner)
-    val settingsRepository = SettingsRepository(appHome)
-    val toolManager = ToolManager(appHome) { resourceName ->
-        object {}.javaClass.classLoader.getResourceAsStream(resourceName)
-            ?.bufferedReader()
-            ?.readText()
-            ?: error("Missing resource: $resourceName")
+    val appHome = remember { Paths.get(System.getProperty("user.home"), ".yt-dlpk") }
+    val processRunner = remember { ProcessRunner() }
+    val formatService = remember { FormatService(processRunner) }
+    val settingsRepository = remember { SettingsRepository(appHome) }
+    val toolManager = remember {
+        ToolManager(appHome) { resourceName ->
+            object {}.javaClass.classLoader.getResourceAsStream(resourceName)
+                ?.bufferedReader()
+                ?.readText()
+                ?: error("Missing resource: $resourceName")
+        }
     }
-    val commandBuilder = YtDlpCommandBuilder(formatService)
-    val ytDlpService = YtDlpService(
-        processRunner = processRunner,
-        formatService = formatService,
-        commandBuilder = commandBuilder,
-        progressParser = ProgressParser()
-    )
+    val commandBuilder = remember { YtDlpCommandBuilder(formatService) }
+    val ytDlpService = remember {
+        YtDlpService(
+            processRunner = processRunner,
+            formatService = formatService,
+            commandBuilder = commandBuilder,
+            progressParser = ProgressParser()
+        )
+    }
 
-    val viewModel = AppViewModel(
-        appHome = appHome,
-        settingsRepository = settingsRepository,
-        toolManager = toolManager,
-        ytDlpService = ytDlpService
-    )
+    val viewModel = remember {
+        AppViewModel(
+            appHome = appHome,
+            settingsRepository = settingsRepository,
+            toolManager = toolManager,
+            ytDlpService = ytDlpService
+        )
+    }
 
     val windowState = rememberWindowState(size = DpSize(1360.dp, 860.dp))
     Window(
