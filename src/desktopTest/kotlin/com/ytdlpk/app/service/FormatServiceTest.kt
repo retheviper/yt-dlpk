@@ -3,6 +3,7 @@ package com.ytdlpk.app.service
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.doubles.plusOrMinus
 import io.kotest.matchers.shouldBe
+import com.ytdlpk.app.model.FormatKind
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 
@@ -58,5 +59,38 @@ class FormatServiceTest : StringSpec({
         entries[0].resolution shouldBe "1920x1080"
         entries[0].kind shouldBe com.ytdlpk.app.model.FormatKind.VIDEO_ONLY
         entries[1].kind shouldBe com.ytdlpk.app.model.FormatKind.AUDIO_ONLY
+    }
+
+    "classifies direct video files with unknown codecs as video audio" {
+        val service = FormatService(ProcessRunner())
+        val formats = Json.parseToJsonElement(
+            """
+            [
+              {"format_id":"mp4","ext":"mp4","vcodec":null,"acodec":null,"format":"mp4 - unknown"}
+            ]
+            """.trimIndent()
+        ).jsonArray
+
+        val entries = service.parseFormatJson(formats)
+
+        entries.size shouldBe 1
+        entries[0].formatId shouldBe "mp4"
+        entries[0].kind shouldBe FormatKind.VIDEO_AUDIO
+    }
+
+    "classifies direct format table video files with unknown codecs as video audio" {
+        val service = FormatService(ProcessRunner())
+        val lines = listOf(
+            "[info] Available formats for mov_bbb:",
+            "ID  EXT RESOLUTION | PROTO | VCODEC  ACODEC",
+            "--------------------------------------------",
+            "mp4 mp4 unknown    | https | unknown unknown"
+        )
+
+        val entries = service.parseFormatTable(lines)
+
+        entries.size shouldBe 1
+        entries[0].formatId shouldBe "mp4"
+        entries[0].kind shouldBe FormatKind.VIDEO_AUDIO
     }
 })

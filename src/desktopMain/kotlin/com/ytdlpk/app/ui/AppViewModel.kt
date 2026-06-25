@@ -116,14 +116,19 @@ class AppViewModel(
     fun onSettingsChange(settings: AppSettings) {
         settingsRepository.save(settings)
         update { state ->
-            val selected = state.selectedFormat?.takeIf { it.matchesVideoCodec(settings.videoCodecPreference) }?.formatId
+            val selected = state.selectedFormat
+                ?.takeIf {
+                    it.kind == FormatKind.AUDIO_ONLY ||
+                        matchingOrAllVideoFormats(state.formats, state.selectedFormatTab, settings.videoCodecPreference).contains(it)
+                }
+                ?.formatId
                 ?: pickBestFormatId(state.formats, state.selectedFormatTab, settings.videoCodecPreference)
             state.copy(
                 settings = settings,
                 selectedFormatId = selected,
-                selectedVideoOnlyFormatId = state.selectedVideoOnlyFormat
-                    ?.takeIf { it.matchesVideoCodec(settings.videoCodecPreference) }
-                    ?.formatId
+                selectedVideoOnlyFormatId = state.selectedVideoOnlyFormat?.takeIf {
+                    matchingOrAllVideoFormats(state.formats, FormatKind.VIDEO_ONLY, settings.videoCodecPreference).contains(it)
+                }?.formatId
                     ?: pickBestFormatId(state.formats, FormatKind.VIDEO_ONLY, settings.videoCodecPreference)
             )
         }
@@ -315,8 +320,7 @@ class AppViewModel(
         logMessage: String
     ) {
         val defaultTab = when {
-            formats.any { it.kind == FormatKind.VIDEO_AUDIO && it.matchesVideoCodec(settings.videoCodecPreference) } -> FormatKind.VIDEO_AUDIO
-            formats.any { it.kind == FormatKind.VIDEO_ONLY && it.matchesVideoCodec(settings.videoCodecPreference) } -> FormatKind.VIDEO_ONLY
+            formats.any { it.kind == FormatKind.VIDEO_AUDIO || it.kind == FormatKind.VIDEO_ONLY } -> FormatKind.VIDEO_AUDIO
             formats.any { it.kind == FormatKind.AUDIO_ONLY } -> FormatKind.AUDIO_ONLY
             else -> FormatKind.VIDEO_AUDIO
         }
@@ -465,13 +469,17 @@ class AppViewModel(
                 }
                 downloadCancelRequested = false
                 var lastProgressUpdateNanos = 0L
+                val stderrLines = mutableListOf<String>()
                 runningProcess = ytDlpService.startDownload(
                     scope = scope,
                     ytDlpPath = ytDlpPath,
                     ffmpegPath = resolvedFfmpegPath,
                     options = options,
                     onStdoutLine = {},
-                    onStderrLine = { addLog("[err] $it") },
+                    onStderrLine = {
+                        stderrLines += it
+                        addLog("[err] $it")
+                    },
                     onProgress = { progress ->
                         val now = System.nanoTime()
                         if (now - lastProgressUpdateNanos >= PROGRESS_UPDATE_INTERVAL_NANOS || progress.percent == 100.0) {
@@ -485,13 +493,14 @@ class AppViewModel(
                             downloadCancelRequested = false
                             return@onExit
                         }
-                        val dialogMessage = handleDownloadExit(code)
+                        val dialogMessage = handleDownloadExit(code, stderrLines)
+                        val errorSummary = stderrSummary(stderrLines)
                         update {
                             it.copy(
                                 isDownloading = false,
                                 progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
                                 logs = (it.logs + "$finishLogPrefix with code $code").takeLast(400),
-                                lastError = if (code == 0) null else "$failurePrefix: exit code $code",
+                                lastError = if (code == 0) null else listOfNotNull("$failurePrefix: exit code $code", errorSummary).joinToString("\n"),
                                 errorDialogMessage = dialogMessage
                             )
                         }
@@ -626,7 +635,7 @@ class AppViewModel(
         _state.update(block)
     }
 
-    private fun handleDownloadExit(code: Int): String? {
+    private fun handleDownloadExit(code: Int, stderrLines: List<String>): String? {
         val snapshot = state.value
         val s = uiStrings(snapshot.settings.language)
         val isFocused = isAppWindowFocused()
@@ -641,7 +650,10 @@ class AppViewModel(
             return null
         }
 
-        val failureMessage = "${s.downloadFailedNotification} (exit code: $code)"
+        val failureMessage = listOfNotNull(
+            "${s.downloadFailedNotification} (exit code: $code)",
+            stderrSummary(stderrLines)
+        ).joinToString("\n\n")
         if (isFocused) {
             return failureMessage
         }
@@ -654,17 +666,23 @@ class AppViewModel(
         return null
     }
 
+    private fun stderrSummary(stderrLines: List<String>): String? {
+        return stderrLines
+            .asReversed()
+            .firstOrNull { line ->
+                val trimmed = line.trim()
+                trimmed.isNotEmpty() && !trimmed.startsWith("[download]")
+            }
+            ?.trim()
+    }
+
     private fun pickBestFormatId(
         formats: List<FormatEntry>,
         kind: FormatKind,
         videoCodecPreference: VideoCodecPreference = VideoCodecPreference.ALL
     ): String? {
         val candidates = when (kind) {
-            FormatKind.VIDEO_AUDIO -> formats.filter {
-                (it.kind == FormatKind.VIDEO_AUDIO || it.kind == FormatKind.VIDEO_ONLY) &&
-                    it.matchesVideoCodec(videoCodecPreference)
-            }
-            FormatKind.VIDEO_ONLY -> formats.filter { it.kind == kind && it.matchesVideoCodec(videoCodecPreference) }
+            FormatKind.VIDEO_AUDIO, FormatKind.VIDEO_ONLY -> matchingOrAllVideoFormats(formats, kind, videoCodecPreference)
             else -> formats.filter { it.kind == kind }
         }
         if (candidates.isEmpty()) return null
@@ -682,21 +700,43 @@ class AppViewModel(
         }
     }
 
+    private fun matchingOrAllVideoFormats(
+        formats: List<FormatEntry>,
+        kind: FormatKind,
+        videoCodecPreference: VideoCodecPreference
+    ): List<FormatEntry> {
+        val candidates = when (kind) {
+            FormatKind.VIDEO_AUDIO -> formats.filter { it.kind == FormatKind.VIDEO_AUDIO || it.kind == FormatKind.VIDEO_ONLY }
+            FormatKind.VIDEO_ONLY -> formats.filter { it.kind == FormatKind.VIDEO_ONLY }
+            else -> formats.filter { it.kind == kind }
+        }
+        val preferred = candidates.filter { it.matchesVideoCodec(videoCodecPreference) }
+        return preferred.ifEmpty { candidates }
+    }
+
     private fun quickFormatSelector(profile: QuickQualityProfile, codecPreference: VideoCodecPreference): String {
         val codecFilter = codecSelectorFilter(codecPreference)
         return when (profile) {
-            QuickQualityProfile.BEST -> "bestvideo+bestaudio/best"
-            QuickQualityProfile.UP_TO_2160P -> "bestvideo${codecFilter}[height<=2160]+bestaudio/best[height<=2160]/best"
-            QuickQualityProfile.UP_TO_1440P -> "bestvideo${codecFilter}[height<=1440]+bestaudio/best[height<=1440]/best"
-            QuickQualityProfile.UP_TO_1080P -> "bestvideo${codecFilter}[height<=1080]+bestaudio/best[height<=1080]/best"
-            QuickQualityProfile.UP_TO_720P -> "bestvideo${codecFilter}[height<=720]+bestaudio/best[height<=720]/best"
+            QuickQualityProfile.BEST -> quickBestSelector(codecFilter)
+            QuickQualityProfile.UP_TO_2160P -> quickCappedSelector(codecFilter, 2160)
+            QuickQualityProfile.UP_TO_1440P -> quickCappedSelector(codecFilter, 1440)
+            QuickQualityProfile.UP_TO_1080P -> quickCappedSelector(codecFilter, 1080)
+            QuickQualityProfile.UP_TO_720P -> quickCappedSelector(codecFilter, 720)
             QuickQualityProfile.AUDIO_ONLY -> "bestaudio/best"
-        }.let {
-            if (profile == QuickQualityProfile.BEST && codecFilter.isNotEmpty()) {
-                "bestvideo$codecFilter+bestaudio/best"
-            } else {
-                it
-            }
+        }
+    }
+
+    private fun quickBestSelector(codecFilter: String): String {
+        val split = "bestvideo+bestaudio"
+        return if (codecFilter.isEmpty()) "$split/best" else "bestvideo$codecFilter+bestaudio/$split/best"
+    }
+
+    private fun quickCappedSelector(codecFilter: String, maxHeight: Int): String {
+        val split = "bestvideo[height<=$maxHeight]+bestaudio"
+        return if (codecFilter.isEmpty()) {
+            "$split/best[height<=$maxHeight]/best"
+        } else {
+            "bestvideo$codecFilter[height<=$maxHeight]+bestaudio/$split/best[height<=$maxHeight]/best"
         }
     }
 

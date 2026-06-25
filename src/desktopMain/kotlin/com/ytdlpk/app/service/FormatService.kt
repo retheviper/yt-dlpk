@@ -4,6 +4,7 @@ import com.ytdlpk.app.model.FormatEntry
 import com.ytdlpk.app.model.FormatKind
 import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.VideoCodecPreference
+import com.ytdlpk.app.model.matchesVideoCodec
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.doubleOrNull
@@ -70,12 +71,6 @@ class FormatService(
             val abr = ABR_REGEX.find(rest)?.groupValues?.get(1)?.toDoubleOrNull()
 
             val lower = rest.lowercase()
-            val kind = when {
-                lower.contains("audio only") -> FormatKind.AUDIO_ONLY
-                lower.contains("video only") || lower.contains("acodec none") -> FormatKind.VIDEO_ONLY
-                lower.contains("video") || resolution != null -> FormatKind.VIDEO_AUDIO
-                else -> FormatKind.UNKNOWN
-            }
 
             val codecSection = rest.substringAfterLast("|", rest)
             val vcodec = CODEC_REGEX.findAll(codecSection)
@@ -84,6 +79,13 @@ class FormatService(
             val acodec = CODEC_REGEX.findAll(codecSection)
                 .map { it.value }
                 .firstOrNull { it.contains("mp4a") || it.contains("opus") || it.contains("aac") }
+            val kind = classifyFormatKind(
+                ext = ext,
+                resolution = resolution,
+                vcodec = vcodec,
+                acodec = acodec,
+                text = lower
+            )
 
             entries += FormatEntry(
                 formatId = formatId,
@@ -120,12 +122,13 @@ class FormatService(
             val note = obj.stringOrNull("format_note")
                 ?: obj.stringOrNull("format")
                 ?: obj.stringOrNull("dynamic_range")
-            val kind = when {
-                vcodec == "none" && acodec != null && acodec != "none" -> FormatKind.AUDIO_ONLY
-                acodec == "none" && vcodec != null && vcodec != "none" -> FormatKind.VIDEO_ONLY
-                vcodec != null && vcodec != "none" -> FormatKind.VIDEO_AUDIO
-                else -> FormatKind.UNKNOWN
-            }
+            val kind = classifyFormatKind(
+                ext = ext,
+                resolution = resolution,
+                vcodec = vcodec,
+                acodec = acodec,
+                text = listOfNotNull(note, obj.stringOrNull("format")).joinToString(" ").lowercase()
+            )
             FormatEntry(
                 formatId = formatId,
                 ext = ext,
@@ -151,26 +154,30 @@ class FormatService(
     ): String {
         return when (selected.kind) {
             FormatKind.VIDEO_ONLY -> {
-                val selectedVideo = selected.formatId.withCodecFilter(videoCodecPreference)
+                val selectedVideo = selected.formatSelector(videoCodecPreference)
                 when (selectedTab) {
-                    FormatKind.VIDEO_ONLY -> selectedVideo
+                    FormatKind.VIDEO_ONLY -> withFallback(selectedVideo, "bestvideo")
                     else -> when {
-                        pairedAudioOnly?.kind == FormatKind.AUDIO_ONLY -> "$selectedVideo+${pairedAudioOnly.formatId}"
-                        else -> "$selectedVideo+bestaudio/best"
+                        pairedAudioOnly?.kind == FormatKind.AUDIO_ONLY ->
+                            withFallback("$selectedVideo+${pairedAudioOnly.formatId}", DEFAULT_VIDEO_AUDIO_SELECTOR)
+                        else -> withFallback("$selectedVideo+bestaudio", DEFAULT_VIDEO_AUDIO_SELECTOR)
                     }
                 }
             }
             FormatKind.AUDIO_ONLY -> {
                 when (selectedTab) {
-                    FormatKind.AUDIO_ONLY -> selected.formatId
+                    FormatKind.AUDIO_ONLY -> withFallback(selected.formatId, "bestaudio/best")
                     else -> if (pairedVideoOnly?.kind == FormatKind.VIDEO_ONLY) {
-                        "${pairedVideoOnly.formatId.withCodecFilter(videoCodecPreference)}+${selected.formatId}"
+                        withFallback(
+                            "${pairedVideoOnly.formatSelector(videoCodecPreference)}+${selected.formatId}",
+                            DEFAULT_VIDEO_AUDIO_SELECTOR
+                        )
                     } else {
-                        selected.formatId
+                        withFallback(selected.formatId, "bestaudio/best")
                     }
                 }
             }
-            else -> selected.formatId.withCodecFilter(videoCodecPreference)
+            else -> withFallback(selected.formatSelector(videoCodecPreference), DEFAULT_VIDEO_AUDIO_SELECTOR)
         }
     }
 
@@ -189,6 +196,37 @@ class FormatService(
         return "$this[$filter]"
     }
 
+    private fun withFallback(primary: String, fallback: String): String {
+        return if (primary == fallback || primary.endsWith("/$fallback")) primary else "$primary/$fallback"
+    }
+
+    private fun FormatEntry.formatSelector(preference: VideoCodecPreference): String {
+        if (kind == FormatKind.AUDIO_ONLY || preference == VideoCodecPreference.ALL) return formatId
+        return if (matchesVideoCodec(preference)) formatId.withCodecFilter(preference) else formatId
+    }
+
+    private fun classifyFormatKind(
+        ext: String,
+        resolution: String?,
+        vcodec: String?,
+        acodec: String?,
+        text: String
+    ): FormatKind {
+        val normalizedExt = ext.lowercase()
+        val normalizedVcodec = vcodec?.lowercase()
+        val normalizedAcodec = acodec?.lowercase()
+        return when {
+            resolution == "audio only" || text.contains("audio only") || normalizedExt in AUDIO_EXTENSIONS -> FormatKind.AUDIO_ONLY
+            text.contains("video only") || text.contains("acodec none") -> FormatKind.VIDEO_ONLY
+            normalizedVcodec == "none" && normalizedAcodec != null && normalizedAcodec != "none" -> FormatKind.AUDIO_ONLY
+            normalizedAcodec == "none" && normalizedVcodec != null && normalizedVcodec != "none" -> FormatKind.VIDEO_ONLY
+            normalizedVcodec != null && normalizedVcodec != "none" && normalizedVcodec != "unknown" -> FormatKind.VIDEO_AUDIO
+            text.contains("video") || resolution != null -> FormatKind.VIDEO_AUDIO
+            normalizedExt in VIDEO_EXTENSIONS -> FormatKind.VIDEO_AUDIO
+            else -> FormatKind.UNKNOWN
+        }
+    }
+
     private fun resolutionFromDimensions(width: Int?, height: Int?): String? {
         if (width == null || height == null || width <= 0 || height <= 0) return null
         return "${width}x$height"
@@ -202,6 +240,9 @@ class FormatService(
         private val TBR_REGEX = Regex("(\\d+(?:\\.\\d+)?)k(?:bps)?\\b(?!i?b|hz)", RegexOption.IGNORE_CASE)
         private val ABR_REGEX = Regex("audio.*?(\\d+(?:\\.\\d+)?)k(?:bps)?\\b(?!i?b|hz)", RegexOption.IGNORE_CASE)
         private val CODEC_REGEX = Regex("[a-z0-9]{3,}(?:\\.[a-z0-9]+)*", RegexOption.IGNORE_CASE)
+        private const val DEFAULT_VIDEO_AUDIO_SELECTOR = "bestvideo+bestaudio/best"
+        private val VIDEO_EXTENSIONS = setOf("3gp", "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "webm", "wmv")
+        private val AUDIO_EXTENSIONS = setOf("aac", "aiff", "alac", "flac", "m4a", "mka", "mp3", "ogg", "opus", "wav", "weba", "wma")
     }
 }
 

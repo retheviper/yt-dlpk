@@ -69,7 +69,7 @@ class YtDlpCommandBuilderTest : StringSpec({
         )
 
         val fIndex = command.indexOf("-f")
-        command[fIndex + 1] shouldBe "137+bestaudio/best"
+        command[fIndex + 1] shouldBe "137+bestaudio/bestvideo+bestaudio/best"
     }
 
     "builds selector without audio merge in video-only tab" {
@@ -83,7 +83,7 @@ class YtDlpCommandBuilderTest : StringSpec({
         )
 
         val fIndex = command.indexOf("-f")
-        command[fIndex + 1] shouldBe "137"
+        command[fIndex + 1] shouldBe "137/bestvideo"
     }
 
     "builds selector with explicit video+audio pairing when both are selected" {
@@ -99,7 +99,7 @@ class YtDlpCommandBuilderTest : StringSpec({
         )
 
         val fIndex = command.indexOf("-f")
-        command[fIndex + 1] shouldBe "137+251"
+        command[fIndex + 1] shouldBe "137+251/bestvideo+bestaudio/best"
     }
 
     "builds selector without video merge in audio-only tab" {
@@ -115,7 +115,7 @@ class YtDlpCommandBuilderTest : StringSpec({
         )
 
         val fIndex = command.indexOf("-f")
-        command[fIndex + 1] shouldBe "251"
+        command[fIndex + 1] shouldBe "251/bestaudio/best"
     }
 
     "adds extraction and subtitle flags when enabled" {
@@ -172,7 +172,79 @@ class YtDlpCommandBuilderTest : StringSpec({
         )
 
         val fIndex = command.indexOf("-f")
-        command[fIndex + 1] shouldBe "137[vcodec^=avc1]+bestaudio/best"
+        command[fIndex + 1] shouldBe "137[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best"
+    }
+
+    "does not add codec filter when selected format has no matching codec metadata" {
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(
+                selectedFormatTab = FormatKind.VIDEO_AUDIO,
+                selectedFormat = format("http-720", FormatKind.VIDEO_ONLY).copy(vcodec = null, rawText = "720p mp4")
+            ).copy(videoCodecPreference = VideoCodecPreference.H264)
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "http-720+bestaudio/bestvideo+bestaudio/best"
+    }
+
+    "does not add codec filter to paired video outside audio-only tab when metadata does not match" {
+        val video = format("http-720", FormatKind.VIDEO_ONLY).copy(vcodec = null, rawText = "720p mp4")
+        val audio = format("audio", FormatKind.AUDIO_ONLY)
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(
+                selectedFormatTab = FormatKind.VIDEO_AUDIO,
+                selectedFormat = audio
+            ).copy(
+                selectedVideoOnlyFormat = video,
+                videoCodecPreference = VideoCodecPreference.H264
+            )
+        )
+
+        val fIndex = command.indexOf("-f")
+        command[fIndex + 1] shouldBe "http-720+audio/bestvideo+bestaudio/best"
+    }
+
+    "does not force mp4 merge output for quick selector" {
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options().copy(quickFormatSelector = "bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best")
+        )
+
+        command.contains("--merge-output-format") shouldBe false
+    }
+
+    "forces mp4 merge output only for compatible explicit video and audio selections" {
+        val video = format("137", FormatKind.VIDEO_ONLY)
+        val audio = format("140", FormatKind.AUDIO_ONLY).copy(ext = "m4a")
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(selectedFormat = video).copy(
+                selectedVideoOnlyFormat = video,
+                selectedAudioOnlyFormat = audio,
+                videoCodecPreference = VideoCodecPreference.H264
+            )
+        )
+
+        command shouldContainAll listOf("--merge-output-format", "mp4")
+    }
+
+    "does not force mp4 merge output for generic non-matching video selection" {
+        val command = builder.build(
+            "yt-dlp",
+            "ffmpeg",
+            options(
+                selectedFormatTab = FormatKind.VIDEO_AUDIO,
+                selectedFormat = format("http-720", FormatKind.VIDEO_ONLY).copy(vcodec = null, rawText = "720p webm", ext = "webm")
+            )
+        )
+
+        command.contains("--merge-output-format") shouldBe false
     }
 
     "rejects blank output directory" {

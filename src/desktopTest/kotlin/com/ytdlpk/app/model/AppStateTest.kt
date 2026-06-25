@@ -83,6 +83,19 @@ class AppStateTest : StringSpec({
         filtered shouldContainExactly listOf("137")
     }
 
+    "falls back to all video formats when codec preference has no matches" {
+        val generic = format("http-720", FormatKind.VIDEO_ONLY).copy(vcodec = null, rawText = "720p mp4")
+        val audio = format("140", FormatKind.AUDIO_ONLY)
+
+        val filtered = AppState(
+            formats = listOf(generic, audio),
+            selectedFormatTab = FormatKind.VIDEO_AUDIO,
+            settings = AppSettings(videoCodecPreference = VideoCodecPreference.H264)
+        ).filteredFormats.map { it.formatId }
+
+        filtered shouldContainExactly listOf("http-720")
+    }
+
     "defaults video codec preference to h264" {
         AppSettings().videoCodecPreference shouldBe VideoCodecPreference.H264
     }

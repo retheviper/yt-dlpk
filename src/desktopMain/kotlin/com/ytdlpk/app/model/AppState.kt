@@ -46,12 +46,18 @@ data class AppState(
     val filteredFormats: List<FormatEntry>
         get() = formats.filter { entry ->
             when (selectedFormatTab) {
-                FormatKind.VIDEO_AUDIO -> (entry.kind == FormatKind.VIDEO_AUDIO || entry.kind == FormatKind.VIDEO_ONLY) &&
-                    entry.matchesVideoCodec(settings.videoCodecPreference)
-                FormatKind.VIDEO_ONLY -> entry.kind == FormatKind.VIDEO_ONLY &&
-                    entry.matchesVideoCodec(settings.videoCodecPreference)
+                FormatKind.VIDEO_AUDIO -> entry.kind == FormatKind.VIDEO_AUDIO || entry.kind == FormatKind.VIDEO_ONLY
+                FormatKind.VIDEO_ONLY -> entry.kind == FormatKind.VIDEO_ONLY
                 FormatKind.AUDIO_ONLY -> entry.kind == FormatKind.AUDIO_ONLY
                 FormatKind.UNKNOWN -> true
+            }
+        }.let { candidates ->
+            when (selectedFormatTab) {
+                FormatKind.VIDEO_AUDIO, FormatKind.VIDEO_ONLY -> {
+                    val preferred = candidates.filter { it.matchesVideoCodec(settings.videoCodecPreference) }
+                    preferred.ifEmpty { candidates }
+                }
+                else -> candidates
             }
         }
 }
