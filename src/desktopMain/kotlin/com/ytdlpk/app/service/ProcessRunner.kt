@@ -1,17 +1,18 @@
 package com.ytdlpk.app.service
 
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.stream.Collectors
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
 
 data class ProcessResult(
     val exitCode: Int,
@@ -19,105 +20,94 @@ data class ProcessResult(
     val stderrLines: List<String>
 )
 
-class RunningProcess(private val job: Job, private val process: Process) {
+class RunningProcess(private val job: Job) {
     fun cancel() {
-        terminateProcessTree(process)
         job.cancel()
     }
+
+    suspend fun join() = job.join()
 }
 
 class ProcessRunner(
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val pathDirectories: List<Path> = systemToolDirectories()
 ) {
     suspend fun run(
         command: List<String>,
         workingDir: Path? = null,
         onStdoutLine: (String) -> Unit = {},
-        onStderrLine: (String) -> Unit = {}
+        onStderrLine: (String) -> Unit = {},
+        captureOutput: Boolean = true
     ): ProcessResult = withContext(ioDispatcher) {
         val process = ProcessBuilder(command)
             .apply {
                 if (workingDir != null) {
                     directory(workingDir.toFile())
                 }
+                environment()["PATH"] = pathDirectories.joinToString(File.pathSeparator)
             }
             .start()
 
         val stdout = mutableListOf<String>()
         val stderr = mutableListOf<String>()
 
-        try {
-            coroutineScope {
-                val stdoutJob = async {
+        coroutineScope {
+            try {
+                val stdoutJob = launch {
                     process.inputStream.bufferedReader().useLines { lines ->
                         lines.forEach { line ->
-                            stdout += line
+                            if (captureOutput) stdout += line
                             onStdoutLine(line)
                         }
                     }
                 }
-                val stderrJob = async {
+                val stderrJob = launch {
                     process.errorStream.bufferedReader().useLines { lines ->
                         lines.forEach { line ->
-                            stderr += line
+                            if (captureOutput) stderr += line
                             onStderrLine(line)
                         }
                     }
                 }
 
-                val waitJob = async { process.waitFor() }
-                awaitAll(stdoutJob, stderrJob, waitJob)
+                runInterruptible { process.waitFor() }
+                stdoutJob.join()
+                stderrJob.join()
+            } finally {
+                // Terminate before coroutineScope waits for readers blocked on a silent child.
+                terminateProcessTree(process)
+                process.inputStream.close()
+                process.errorStream.close()
+                process.outputStream.close()
             }
-
-            ProcessResult(process.exitValue(), stdout, stderr)
-        } catch (e: CancellationException) {
-            terminateProcessTree(process)
-            throw e
         }
+        ProcessResult(process.exitValue(), stdout, stderr)
     }
 
     fun runStreaming(
-        scope: kotlinx.coroutines.CoroutineScope,
+        scope: CoroutineScope,
         command: List<String>,
         workingDir: Path? = null,
         onStdoutLine: (String) -> Unit = {},
         onStderrLine: (String) -> Unit = {},
-        onExit: (Int) -> Unit = {}
+        onExit: (Int) -> Unit = {},
+        onError: (Throwable) -> Unit = { throw it }
     ): RunningProcess {
-        val process = ProcessBuilder(command)
-            .apply {
-                if (workingDir != null) {
-                    directory(workingDir.toFile())
-                }
-            }
-            .start()
-
         val job = scope.launch(ioDispatcher) {
-            val stdoutJob = launch {
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach(onStdoutLine)
-                }
-            }
-            val stderrJob = launch {
-                process.errorStream.bufferedReader().useLines { lines ->
-                    lines.forEach(onStderrLine)
-                }
-            }
-
             try {
-                val code = process.waitFor()
-                stdoutJob.join()
-                stderrJob.join()
-                withContext(scope.coroutineContext) { onExit(code) }
-            } catch (_: CancellationException) {
-                terminateProcessTree(process)
+                val result = run(command, workingDir, onStdoutLine, onStderrLine, captureOutput = false)
+                onExit(result.exitCode)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                onError(e)
             }
         }
-        return RunningProcess(job, process)
+        return RunningProcess(job)
     }
 }
 
-private fun terminateProcessTree(process: Process) {
+internal fun terminateProcessTree(process: Process) {
     val root = process.toHandle()
     val descendants = root.descendants().use { stream ->
         stream.collect(Collectors.toList())

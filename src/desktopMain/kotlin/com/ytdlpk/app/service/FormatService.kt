@@ -17,10 +17,13 @@ class FormatService(
     suspend fun fetchFormats(
         ytDlpPath: String,
         url: String,
-        playlistMode: PlaylistMode = PlaylistMode.PLAYLIST
+        playlistMode: PlaylistMode = PlaylistMode.PLAYLIST,
+        runtimeArguments: List<String> = emptyList()
     ): List<FormatEntry> {
         val command = mutableListOf(
             ytDlpPath,
+            "--ignore-config",
+            "--no-colors",
             "-F",
             "--no-warnings",
             "--playlist-items", "1"
@@ -28,7 +31,8 @@ class FormatService(
         if (playlistMode == PlaylistMode.SINGLE) {
             command += "--no-playlist"
         }
-        command += url
+        command += runtimeArguments
+        command += listOf("--", url)
 
         val result = processRunner.run(
             command

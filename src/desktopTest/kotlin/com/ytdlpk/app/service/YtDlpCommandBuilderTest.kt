@@ -58,6 +58,12 @@ class YtDlpCommandBuilderTest : StringSpec({
         command shouldContain "--no-playlist"
     }
 
+    "separates a URL from options and ignores external CLI configuration" {
+        val command = builder.build("yt-dlp", "ffmpeg", options().copy(url = "--version"))
+        command.takeLast(2) shouldBe listOf("--", "--version")
+        command shouldContain "--ignore-config"
+    }
+
     "builds selector with bestaudio merge for video-only format" {
         val command = builder.build(
             "yt-dlp",

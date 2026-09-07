@@ -22,12 +22,12 @@ Language versions:
 
 ## Recommended Setup
 
-`yt-dlpk` can download app-managed `yt-dlp` and `ffmpeg` when they are missing, but installing them on your system is recommended. System-installed tools usually start faster and are easier to keep up to date.
+`yt-dlpk` uses working system tools first. Missing `yt-dlp`, `ffmpeg`/`ffprobe`, and Deno (the YouTube JavaScript runtime) are downloaded into `~/.yt-dlpk/tools/bin`; they are not embedded in the application package. Initial setup needs an internet connection. macOS downloads match Intel or Apple Silicon. See [tool management](docs/tool-management.md) for sources and update behavior.
 
 macOS with Homebrew:
 
 ```sh
-brew install yt-dlp ffmpeg
+brew install yt-dlp ffmpeg deno
 ```
 
 Windows with winget:

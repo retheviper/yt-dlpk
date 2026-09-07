@@ -1,40 +1,29 @@
 package com.ytdlpk.app.service
 
 import com.ytdlpk.app.model.ToolPaths
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
-import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
-import java.io.BufferedInputStream
-import java.io.FileInputStream
+import java.io.File
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse.BodyHandlers
-import java.time.Duration
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption
-import java.nio.file.attribute.PosixFilePermission
-import java.util.Comparator
+import java.time.Duration
 import java.util.concurrent.TimeUnit
-import java.util.zip.ZipInputStream
-import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
-import kotlin.io.path.inputStream
-import kotlin.io.path.name
-import kotlin.io.path.outputStream
-import kotlin.io.path.writeBytes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 private data class ToolSources(
     val ytDlp: Map<String, String>,
-    val ffmpeg: Map<String, String>
+    val ffmpeg: Map<String, String>,
+    val ffprobe: Map<String, String>,
+    val deno: Map<String, String>
 )
 
 private data class ExecProbe(
@@ -49,10 +38,15 @@ data class SystemToolUpdateResult(
 
 class ToolManager(
     private val appHome: Path,
+    private val os: String = detectToolOs(),
+    private val arch: String = detectToolArch(),
+    private val searchDirectories: List<Path> = systemToolDirectories(os),
+    private val download: ((String, Path) -> Unit)? = null,
     private val resourceLoader: (String) -> String
 ) {
     private val toolProbeTimeoutSeconds = 10L
     private val networkTimeout = Duration.ofSeconds(30)
+    private val downloadTimeout = Duration.ofMinutes(5)
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .followRedirects(HttpClient.Redirect.ALWAYS)
@@ -60,49 +54,78 @@ class ToolManager(
 
     private val toolsRoot = appHome.resolve("tools")
     private val binDir = toolsRoot.resolve("bin")
+    @Volatile var denoPath: Path? = null
+        private set
 
-    suspend fun ensureYtDlp(onStatus: (String) -> Unit): Path {
-        return withContext(Dispatchers.IO) {
-            binDir.createDirectories()
-            val os = detectOs()
-            val sources = parseToolSources(resourceLoader("tool-sources.json"))
-            val ytDlpName = if (os == "windows") "yt-dlp.exe" else "yt-dlp"
-            val ytDlpPath = binDir.resolve(ytDlpName)
+    private val ytDlpMutex = Mutex()
+    private val ffmpegMutex = Mutex()
+    private val denoMutex = Mutex()
+    private val installer = ManagedToolInstaller(toolsRoot, ::downloadToPath) { path, arg ->
+        makeExecutable(path, os)
+        requireExecutable(path, arg)
+    }
 
-            resolveExistingBinary(ytDlpPath, ytDlpName, "--version") ?: run {
-                onStatus("Downloading yt-dlp...")
-                val ytDlpCandidates = buildYtDlpCandidates(os, sources)
-                downloadExecutableBinary(ytDlpCandidates, ytDlpPath, "--version", os)
-                ytDlpPath
+    suspend fun ensureYtDlp(onStatus: (String) -> Unit): Path = ytDlpMutex.withLock {
+        runInterruptible(Dispatchers.IO) { resolveYtDlp(onStatus, force = false) }
+    }
+
+    suspend fun ensureFfmpeg(onStatus: (String) -> Unit): Path = ffmpegMutex.withLock {
+        runInterruptible(Dispatchers.IO) { resolveFfmpeg(onStatus, force = false) }
+    }
+
+    suspend fun ensureDeno(onStatus: (String) -> Unit): Path = denoMutex.withLock {
+        runInterruptible(Dispatchers.IO) {
+            val target = binDir.resolve(executableName("deno"))
+            val existing = (searchDirectories.map { it.resolve(target.fileName) } + listOf(target)).firstOrNull { path ->
+                if (!Files.isRegularFile(path)) return@firstOrNull false
+                val probe = probeExecutable(path, "--version")
+                probe.ok && (compareVersions(probe.details, "2.3.0") ?: -1) >= 0
             }
+            (existing ?: run {
+                onStatus("Downloading Deno...")
+                val sources = parseToolSources(resourceLoader("tool-sources.json"))
+                installer.install(mapOf(target to listOf(sourceFor(sources.deno))), "--version")
+                target
+            }).also { denoPath = it }
         }
     }
 
-    suspend fun ensureFfmpeg(onStatus: (String) -> Unit): Path {
-        return withContext(Dispatchers.IO) {
-            binDir.createDirectories()
-            val os = detectOs()
-            val arch = detectArch()
-            val sources = parseToolSources(resourceLoader("tool-sources.json"))
-            val ffmpegName = if (os == "windows") "ffmpeg.exe" else "ffmpeg"
-            val ffmpegPath = binDir.resolve(ffmpegName)
+    private fun executableName(name: String): String = if (os == "windows") "$name.exe" else name
 
-            resolveExistingBinary(ffmpegPath, ffmpegName, "-version") ?: run {
-                onStatus("Downloading ffmpeg...")
-                val archivePath = toolsRoot.resolve(if (os == "linux") "ffmpeg.tar.xz" else "ffmpeg.zip")
-                val ffmpegCandidates = buildFfmpegCandidates(os, arch, sources)
-                downloadBinary(ffmpegCandidates, archivePath)
-                onStatus("Extracting ffmpeg...")
-                installFfmpegArchive(archivePath, ffmpegPath, ffmpegName, os)
-            }
-        }
+    private fun resolveYtDlp(onStatus: (String) -> Unit, force: Boolean): Path {
+        val target = binDir.resolve(executableName("yt-dlp"))
+        if (!force) resolveExistingBinary(target, target.fileName.toString(), "--version")?.let { return it }
+        onStatus("Downloading yt-dlp...")
+        val sources = parseToolSources(resourceLoader("tool-sources.json"))
+        installer.install(mapOf(target to listOf(sourceFor(sources.ytDlp))), "--version")
+        return target
     }
+
+    private fun resolveFfmpeg(onStatus: (String) -> Unit, force: Boolean): Path {
+        val target = binDir.resolve(executableName("ffmpeg"))
+        val probeName = executableName("ffprobe")
+        if (!force) {
+            (searchDirectories.map { it.resolve(target.fileName) } + listOf(target)).firstOrNull { candidate ->
+                isExecutable(candidate, "-version") && isExecutable(candidate.resolveSibling(probeName), "-version")
+            }?.let { return it }
+        }
+        onStatus("Downloading ffmpeg and ffprobe...")
+        val sources = parseToolSources(resourceLoader("tool-sources.json"))
+        val ffmpegUrl = sourceFor(sources.ffmpeg)
+        val ffprobeUrl = sources.ffprobe["$os-$arch"] ?: sources.ffprobe[os] ?: ffmpegUrl
+        installer.install(linkedMapOf(target to listOf(ffmpegUrl), target.resolveSibling(probeName) to listOf(ffprobeUrl)), "-version")
+        return target
+    }
+
+    private fun sourceFor(sources: Map<String, String>): String =
+        sources["$os-$arch"] ?: sources[os] ?: error("No tool download configured for $os/$arch")
 
     suspend fun ensureTools(
         onStatus: (String) -> Unit,
         onYtDlpReady: (Path) -> Unit = {}
     ): ToolPaths {
         val ytDlp = ensureYtDlp(onStatus)
+        ensureDeno(onStatus)
         onYtDlpReady(ytDlp)
         val ffmpeg = ensureFfmpeg(onStatus)
         return ToolPaths(
@@ -113,20 +136,12 @@ class ToolManager(
         )
     }
 
-    suspend fun updateManagedYtDlp(onStatus: (String) -> Unit): ToolPaths {
-        return resolveTools(
-            onStatus = onStatus,
-            forceManagedYtDlp = true,
-            forceManagedFfmpeg = false
-        )
+    suspend fun updateManagedYtDlp(onStatus: (String) -> Unit): Path = ytDlpMutex.withLock {
+        runInterruptible(Dispatchers.IO) { resolveYtDlp(onStatus, force = true) }
     }
 
-    suspend fun updateManagedFfmpeg(onStatus: (String) -> Unit): ToolPaths {
-        return resolveTools(
-            onStatus = onStatus,
-            forceManagedYtDlp = false,
-            forceManagedFfmpeg = true
-        )
+    suspend fun updateManagedFfmpeg(onStatus: (String) -> Unit): Path = ffmpegMutex.withLock {
+        runInterruptible(Dispatchers.IO) { resolveFfmpeg(onStatus, force = true) }
     }
 
     fun getYtDlpVersion(path: String): String {
@@ -137,7 +152,7 @@ class ToolManager(
         return runCommandFirstLine(path, "-version")?.substringBefore(" Copyright") ?: "-"
     }
 
-    suspend fun getLatestYtDlpVersion(): String = withContext(Dispatchers.IO) {
+    suspend fun getLatestYtDlpVersion(): String = runInterruptible(Dispatchers.IO) {
         val url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
         runCatching {
             val json = readTextFromUrl(url)
@@ -145,7 +160,7 @@ class ToolManager(
         }.getOrDefault("-")
     }
 
-    suspend fun getLatestFfmpegVersion(): String = withContext(Dispatchers.IO) {
+    suspend fun getLatestFfmpegVersion(): String = runInterruptible(Dispatchers.IO) {
         runCatching {
             val json = readTextFromUrl("https://evermeet.cx/ffmpeg/info/ffmpeg/release")
             Json.parseToJsonElement(json).jsonObject["version"]?.jsonPrimitive?.content ?: "-"
@@ -197,76 +212,9 @@ class ToolManager(
         )
     }
 
-    private suspend fun resolveTools(
-        onStatus: (String) -> Unit,
-        forceManagedYtDlp: Boolean,
-        forceManagedFfmpeg: Boolean
-    ): ToolPaths = withContext(Dispatchers.IO) {
-        binDir.createDirectories()
-        val os = detectOs()
-        val arch = detectArch()
-        val sources = parseToolSources(resourceLoader("tool-sources.json"))
-
-        val ytDlpName = if (os == "windows") "yt-dlp.exe" else "yt-dlp"
-        val ffmpegName = if (os == "windows") "ffmpeg.exe" else "ffmpeg"
-
-        val ytDlpPath = binDir.resolve(ytDlpName)
-        val ffmpegPath = binDir.resolve(ffmpegName)
-
-        val resolvedYtDlp = if (!forceManagedYtDlp) {
-            resolveExistingBinary(ytDlpPath, ytDlpName, "--version")
-        } else {
-            null
-        } ?: run {
-            onStatus("Downloading yt-dlp...")
-            val ytDlpCandidates = buildYtDlpCandidates(os, sources)
-            downloadExecutableBinary(ytDlpCandidates, ytDlpPath, "--version", os)
-            ytDlpPath
-        }
-
-        val resolvedFfmpeg = if (!forceManagedFfmpeg) {
-            resolveExistingBinary(ffmpegPath, ffmpegName, "-version")
-        } else {
-            null
-        } ?: run {
-            onStatus("Downloading ffmpeg...")
-            val archivePath = toolsRoot.resolve(if (os == "linux") "ffmpeg.tar.xz" else "ffmpeg.zip")
-            val ffmpegCandidates = buildFfmpegCandidates(os, arch, sources)
-            downloadBinary(ffmpegCandidates, archivePath)
-            onStatus("Extracting ffmpeg...")
-            installFfmpegArchive(archivePath, ffmpegPath, ffmpegName, os)
-        }
-
-        ToolPaths(
-            ytDlpPath = resolvedYtDlp.toAbsolutePath().toString(),
-            ffmpegPath = resolvedFfmpeg.toAbsolutePath().toString(),
-            ytDlpManaged = resolvedYtDlp.startsWith(binDir),
-            ffmpegManaged = resolvedFfmpeg.startsWith(binDir)
-        )
-    }
-
     private fun runCommandFirstLine(binaryPath: String, arg: String): String? {
-        return try {
-            val process = ProcessBuilder(binaryPath, arg)
-                .redirectErrorStream(true)
-                .start()
-            val outputBuffer = StringBuilder()
-            val outputCollector = Thread {
-                runCatching {
-                    process.inputStream.bufferedReader().use { outputBuffer.append(it.readText()) }
-                }
-            }.apply { isDaemon = true; start() }
-            val finished = process.waitFor(toolProbeTimeoutSeconds, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(2, TimeUnit.SECONDS)
-                return null
-            }
-            outputCollector.join(2000)
-            outputBuffer.toString().lineSequence().firstOrNull()
-        } catch (_: Throwable) {
-            null
-        }
+        val result = runCommand(listOf(binaryPath, arg), toolProbeTimeoutSeconds)
+        return result.output.lineSequence().firstOrNull()?.takeIf { result.exitCode == 0 }
     }
 
     private suspend fun updateSystemTool(
@@ -278,8 +226,7 @@ class ToolManager(
         chocoPackage: String,
         scoopPackage: String,
         onStatus: (String) -> Unit
-    ): SystemToolUpdateResult = withContext(Dispatchers.IO) {
-        val os = detectOs()
+    ): SystemToolUpdateResult = runInterruptible(Dispatchers.IO) {
         val commands = buildList {
             val brew = findInPath("brew")
             if (brew != null && isLikelyHomebrewBinary(binaryPath)) {
@@ -298,7 +245,7 @@ class ToolManager(
         }
 
         if (commands.isEmpty()) {
-            return@withContext SystemToolUpdateResult(
+            return@runInterruptible SystemToolUpdateResult(
                 updated = false,
                 message = systemUpdateInstructions(toolName)
             )
@@ -309,7 +256,7 @@ class ToolManager(
             onStatus("Updating $toolName...")
             val result = runCommand(command, timeoutSeconds = 600)
             if (result.exitCode == 0) {
-                return@withContext SystemToolUpdateResult(
+                return@runInterruptible SystemToolUpdateResult(
                     updated = true,
                     message = result.output.lineSequence().lastOrNull { it.isNotBlank() } ?: "$toolName update finished."
                 )
@@ -332,35 +279,41 @@ class ToolManager(
     )
 
     private fun runCommand(command: List<String>, timeoutSeconds: Long): CommandResult {
-        return try {
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
-            val outputBuffer = StringBuilder()
-            val outputCollector = Thread {
-                runCatching {
-                    process.inputStream.bufferedReader().use { outputBuffer.append(it.readText()) }
+        val process = try {
+            ProcessBuilder(command).redirectErrorStream(true).apply {
+                environment()["PATH"] = (searchDirectories + listOf(binDir)).joinToString(File.pathSeparator)
+            }.start()
+        } catch (e: Exception) {
+            return CommandResult(-1, e.message.orEmpty())
+        }
+        val output = StringBuilder()
+        val collector = Thread {
+            runCatching {
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line -> synchronized(output) {
+                        if (output.length < 65_536) output.appendLine(line.take(4_096))
+                    } }
                 }
-            }.apply { isDaemon = true; start() }
-
-            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(2, TimeUnit.SECONDS)
-                return CommandResult(exitCode = -1, output = "timeout")
             }
-            outputCollector.join(2000)
-            CommandResult(process.exitValue(), outputBuffer.toString().trim())
-        } catch (t: Throwable) {
-            CommandResult(exitCode = -1, output = t.message ?: t::class.simpleName.orEmpty())
+        }.apply { isDaemon = true; start() }
+        return try {
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                CommandResult(-1, "timeout")
+            } else {
+                collector.join(2_000)
+                CommandResult(process.exitValue(), synchronized(output) { output.toString().trim() })
+            }
+        } finally {
+            terminateProcessTree(process)
+            process.inputStream.close()
+            process.outputStream.close()
         }
     }
 
     private fun versionParts(value: String): List<Int> {
-        return Regex("""\d+""")
-            .findAll(value)
-            .mapNotNull { it.value.toIntOrNull() }
-            .toList()
+        val version = Regex("""^(?:ffmpeg version |deno )?v?(\d+(?:\.\d+)*)(?:\b|$)""")
+            .find(value.trim())?.groupValues?.get(1) ?: return emptyList()
+        return version.split('.').mapNotNull(String::toIntOrNull)
     }
 
     private fun isLikelyHomebrewBinary(path: String): Boolean {
@@ -370,190 +323,16 @@ class ToolManager(
     }
 
     private fun systemUpdateInstructions(toolName: String): String {
-        return when (detectOs()) {
+        return when (os) {
             "mac" -> "Could not update system $toolName automatically. If it was installed with Homebrew, run: brew upgrade $toolName"
             "windows" -> "Could not update system $toolName automatically. Try winget, Chocolatey, or Scoop for your installation source."
             else -> "Could not update system $toolName automatically. Update it with your distro package manager or install the app-managed tool."
         }
     }
 
-    private fun downloadBinary(urls: List<String>, target: Path) {
-        target.parent.createDirectories()
-        val errors = mutableListOf<String>()
-        val temp = target.resolveSibling("${target.fileName}.download")
-        for (url in urls) {
-            runCatching {
-                Files.deleteIfExists(temp)
-                downloadToPath(url, temp)
-                runCatching {
-                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, ATOMIC_MOVE)
-                }.getOrElse {
-                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
-                }
-            }.onSuccess {
-                return
-            }.onFailure { e ->
-                errors += "$url -> ${e.message}"
-            }.also {
-                runCatching { Files.deleteIfExists(temp) }
-            }
-        }
-        error("Failed to download from all candidates:\n${errors.joinToString("\n")}")
-    }
-
-    private fun downloadExecutableBinary(urls: List<String>, target: Path, checkArg: String, os: String) {
-        target.parent.createDirectories()
-        val errors = mutableListOf<String>()
-        val temp = target.resolveSibling("${target.fileName}.download.bin")
-        val payload = target.resolveSibling("${target.fileName}.download.payload")
-        for (url in urls) {
-            runCatching {
-                Files.deleteIfExists(temp)
-                Files.deleteIfExists(payload)
-                downloadToPath(url, payload)
-                if (url.endsWith(".zip") && os == "mac") {
-                    installMacYtDlpFromZip(payload, target)
-                    val probe = probeExecutable(target, checkArg)
-                    check(probe.ok) { "downloaded file failed executable check: ${probe.details}" }
-                    return
-                } else if (url.endsWith(".zip")) {
-                    extractBinaryFromZip(payload, temp, target.fileName.toString())
-                } else {
-                    Files.copy(payload, temp, StandardCopyOption.REPLACE_EXISTING)
-                }
-                makeExecutable(temp, os)
-                val probe = probeExecutable(temp, checkArg)
-                check(probe.ok) { "downloaded file failed executable check: ${probe.details}" }
-                runCatching {
-                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, ATOMIC_MOVE)
-                }.getOrElse {
-                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
-                }
-            }.onSuccess {
-                return
-            }.onFailure { e ->
-                errors += "$url -> ${e.message}"
-            }.also {
-                runCatching { Files.deleteIfExists(temp) }
-                runCatching { Files.deleteIfExists(payload) }
-            }
-        }
-        error("Failed to install executable from all candidates:\n${errors.joinToString("\n")}")
-    }
-
-    private fun installMacYtDlpFromZip(zipPath: Path, target: Path) {
-        val parent = target.parent ?: error("invalid target path: $target")
-        val internalDir = parent.resolve("_internal")
-        runCatching { Files.walk(internalDir).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
-
-        extractZip(zipPath, parent)
-
-        val extracted = findBinary(parent, "yt-dlp_macos") ?: findBinary(parent, "yt-dlp")
-            ?: error("yt-dlp executable not found in mac zip")
-        Files.copy(extracted, target, StandardCopyOption.REPLACE_EXISTING)
-        makeExecutable(target, "mac")
-    }
-
-    private fun extractBinaryFromZip(zipPath: Path, outBinary: Path, expectedName: String) {
-        val found = mutableListOf<Pair<String, ByteArray>>()
-        ZipInputStream(BufferedInputStream(zipPath.inputStream())).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory) {
-                    val entryName = entry.name.substringAfterLast("/")
-                    if (entryName == expectedName || entryName == "yt-dlp_macos" || entryName == "yt-dlp") {
-                        found += entryName to zip.readBytes()
-                    }
-                }
-                zip.closeEntry()
-                entry = zip.nextEntry
-            }
-        }
-        val bytes = found.firstOrNull()?.second ?: error("executable entry not found in zip")
-        outBinary.writeBytes(bytes)
-    }
-
-    private fun installFfmpegArchive(archivePath: Path, target: Path, binaryName: String, os: String): Path {
-        val extractDir = Files.createTempDirectory(toolsRoot, "ffmpeg-extract-")
-        return try {
-            if (archivePath.name.endsWith(".zip")) {
-                extractZip(archivePath, extractDir)
-            } else {
-                extractTarXz(archivePath, extractDir)
-            }
-            val found = findBinary(extractDir, binaryName)
-                ?: error("ffmpeg binary not found after extraction")
-            Files.copy(found, target, StandardCopyOption.REPLACE_EXISTING)
-            makeExecutable(target, os)
-            requireExecutable(target, "-version")
-            target
-        } finally {
-            deleteRecursively(extractDir)
-            runCatching { Files.deleteIfExists(archivePath) }
-        }
-    }
-
-    private fun extractZip(archive: Path, destination: Path) {
-        val destinationRoot = destination.toAbsolutePath().normalize()
-        ZipInputStream(BufferedInputStream(archive.inputStream())).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory) {
-                    val out = destinationRoot.resolve(entry.name).normalize()
-                    require(out.startsWith(destinationRoot)) {
-                        "Zip entry escapes target directory: ${entry.name}"
-                    }
-                    out.parent?.createDirectories()
-                    out.outputStream().use { output -> zip.copyTo(output) }
-                }
-                zip.closeEntry()
-                entry = zip.nextEntry
-            }
-        }
-    }
-
-    private fun extractTarXz(archive: Path, destination: Path) {
-        val destinationRoot = destination.toAbsolutePath().normalize()
-        TarArchiveInputStream(XZCompressorInputStream(BufferedInputStream(FileInputStream(archive.toFile())))).use { tar ->
-            var entry: TarArchiveEntry? = tar.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory) {
-                    val out = destinationRoot.resolve(entry.name).normalize()
-                    require(out.startsWith(destinationRoot)) {
-                        "Tar entry escapes target directory: ${entry.name}"
-                    }
-                    out.parent?.createDirectories()
-                    out.outputStream().use { output -> tar.copyTo(output) }
-                }
-                entry = tar.nextEntry
-            }
-        }
-    }
-
-    private fun findBinary(root: Path, name: String): Path? {
-        Files.walk(root).use { stream ->
-            return stream
-                .filter { Files.isRegularFile(it) && it.fileName.toString() == name }
-                .findFirst()
-                .orElse(null)
-        }
-    }
-
-    private fun deleteRecursively(root: Path) {
-        if (!Files.exists(root)) return
-        Files.walk(root).use { stream ->
-            stream.sorted(Comparator.reverseOrder()).forEach { path ->
-                runCatching { Files.deleteIfExists(path) }
-            }
-        }
-    }
-
     private fun resolveExistingBinary(appBinary: Path, commandName: String, checkArg: String): Path? {
-        val os = detectOs()
-        val fromPath = findInPath(commandName)
-        if (fromPath != null && isExecutable(fromPath, checkArg)) {
-            return fromPath
-        }
+        searchDirectories.asSequence().map { it.resolve(commandName) }
+            .firstOrNull { isExecutable(it, checkArg) }?.let { return it }
         if (appBinary.exists()) {
             if (isExecutable(appBinary, checkArg)) return appBinary
             makeExecutable(appBinary, os)
@@ -570,33 +349,8 @@ class ToolManager(
     }
 
     private fun makeExecutable(path: Path, os: String) {
-        if (os == "windows" || !Files.exists(path)) return
-
-        runCatching {
-            val perms = runCatching { Files.getPosixFilePermissions(path) }.getOrDefault(emptySet())
-            val updated = perms.toMutableSet().apply {
-                add(PosixFilePermission.OWNER_EXECUTE)
-                add(PosixFilePermission.GROUP_EXECUTE)
-                add(PosixFilePermission.OTHERS_EXECUTE)
-                add(PosixFilePermission.OWNER_READ)
-            }
-            Files.setPosixFilePermissions(path, updated)
-        }
-        runCatching { path.toFile().setExecutable(true, false) }
-        runCatching {
-            ProcessBuilder("chmod", "755", path.toAbsolutePath().toString())
-                .redirectErrorStream(true)
-                .start()
-                .waitFor(5, TimeUnit.SECONDS)
-        }
-
-        if (os == "mac") {
-            runCatching {
-                ProcessBuilder("xattr", "-d", "com.apple.quarantine", path.toAbsolutePath().toString())
-                    .redirectErrorStream(true)
-                    .start()
-                    .waitFor(5, TimeUnit.SECONDS)
-            }
+        if (os != "windows") {
+            check(path.toFile().setExecutable(true, false)) { "Cannot make tool executable: $path" }
         }
     }
 
@@ -605,141 +359,15 @@ class ToolManager(
     }
 
     private fun probeExecutable(path: Path, checkArg: String): ExecProbe {
-        return try {
-            val process = ProcessBuilder(path.toAbsolutePath().toString(), checkArg)
-                .redirectErrorStream(true)
-                .start()
-            // Drain output while running to avoid pipe backpressure causing false timeouts.
-            val outputBuffer = StringBuilder()
-            val outputCollector = Thread {
-                runCatching {
-                    process.inputStream.bufferedReader().use { outputBuffer.append(it.readText()) }
-                }
-            }.apply { isDaemon = true; start() }
-
-            val finished = process.waitFor(toolProbeTimeoutSeconds, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(2, TimeUnit.SECONDS)
-                return ExecProbe(false, "timeout")
-            }
-            outputCollector.join(2000)
-            val output = outputBuffer.toString().trim()
-            if (process.exitValue() == 0) {
-                ExecProbe(true, output.lineSequence().firstOrNull().orEmpty())
-            } else {
-                val first = output.lineSequence().firstOrNull().orEmpty()
-                ExecProbe(false, "exit=${process.exitValue()} ${if (first.isBlank()) "(no output)" else first}")
-            }
-        } catch (t: Throwable) {
-            ExecProbe(false, t.message ?: t::class.simpleName.orEmpty())
-        }
+        if (!Files.isRegularFile(path)) return ExecProbe(false, "missing file")
+        val result = runCommand(listOf(path.toAbsolutePath().toString(), checkArg), toolProbeTimeoutSeconds)
+        return ExecProbe(result.exitCode == 0, result.output.lineSequence().firstOrNull().orEmpty())
     }
 
     private fun findInPath(commandName: String): Path? {
-        val os = detectOs()
-        val pathCandidates = pathSearchDirectories(os)
+        return searchDirectories.asSequence()
             .map { it.resolve(commandName) }
-            .flatMap { candidate ->
-                if (os == "windows" && !candidate.fileName.toString().contains(".")) {
-                    listOf(candidate.resolveSibling("${candidate.fileName}.exe"), candidate)
-                } else {
-                    listOf(candidate)
-                }
-            }
             .firstOrNull { Files.isRegularFile(it) }
-        if (pathCandidates != null) return pathCandidates
-
-        val locator = if (os == "windows") "where" else "which"
-        return try {
-            val process = ProcessBuilder(locator, commandName)
-                .redirectErrorStream(true)
-                .start()
-            process.waitFor(5, TimeUnit.SECONDS)
-            if (process.exitValue() != 0) return null
-            val first = process.inputStream.bufferedReader().useLines { it.firstOrNull() } ?: return null
-            Path.of(first.trim())
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun pathSearchDirectories(os: String): List<Path> {
-        val envPath = System.getenv("PATH")
-            ?.split(java.io.File.pathSeparator)
-            ?.filter { it.isNotBlank() }
-            ?.map { Path.of(it) }
-            .orEmpty()
-        val home = System.getProperty("user.home")?.let { Path.of(it) }
-        val defaults = when (os) {
-            "mac" -> listOf(
-                Path.of("/opt/homebrew/bin"),
-                Path.of("/usr/local/bin"),
-                Path.of("/opt/local/bin"),
-                Path.of("/usr/bin"),
-                Path.of("/bin")
-            )
-            "windows" -> emptyList()
-            else -> listOfNotNull(
-                home?.resolve(".local/bin"),
-                Path.of("/home/linuxbrew/.linuxbrew/bin"),
-                Path.of("/usr/local/bin"),
-                Path.of("/usr/bin"),
-                Path.of("/bin"),
-                Path.of("/snap/bin")
-            )
-        }
-        return (envPath + defaults).distinct()
-    }
-
-    private fun buildYtDlpCandidates(os: String, sources: ToolSources): List<String> {
-        return when (os) {
-            "windows" -> listOfNotNull(
-                sources.ytDlp[os],
-                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            ).distinct()
-            "mac" -> listOfNotNull(
-                sources.ytDlp[os],
-                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
-                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos.zip"
-            ).distinct()
-            else -> listOfNotNull(
-                sources.ytDlp[os],
-                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-            ).distinct()
-        }
-    }
-
-    private fun buildFfmpegCandidates(os: String, arch: String, sources: ToolSources): List<String> {
-        val configured = sources.ffmpeg[os]
-        val fallback = when (os) {
-            "mac" -> listOf("https://evermeet.cx/ffmpeg/getrelease/zip")
-            "windows", "linux" -> listOfNotNull(fetchLatestBtbnAssetUrl(os, arch))
-            else -> emptyList()
-        }
-        return listOfNotNull(configured).plus(fallback).distinct()
-    }
-
-    private fun fetchLatestBtbnAssetUrl(os: String, arch: String): String? {
-        val api = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
-        return runCatching {
-            val json = readTextFromUrl(api)
-            val assets = Json.parseToJsonElement(json).jsonObject["assets"]?.jsonArray ?: return null
-            val suffix = when (os) {
-                "windows" -> if (arch == "arm64") "-winarm64-gpl.zip" else "-win64-gpl.zip"
-                "linux" -> if (arch == "arm64") "-linuxarm64-gpl.tar.xz" else "-linux64-gpl.tar.xz"
-                else -> return null
-            }
-            assets
-                .mapNotNull { item ->
-                    val obj = item.jsonObject
-                    val name = obj["name"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                    val url = obj["browser_download_url"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                    name to url
-                }
-                .firstOrNull { (name, _) -> name.contains(suffix) }
-                ?.second
-        }.getOrNull()
     }
 
     private fun readTextFromUrl(url: String): String {
@@ -754,8 +382,9 @@ class ToolManager(
     }
 
     private fun downloadToPath(url: String, target: Path) {
+        download?.let { it(url, target); return }
         val request = HttpRequest.newBuilder(URI.create(url))
-            .timeout(networkTimeout)
+            .timeout(downloadTimeout)
             .header("User-Agent", "yt-dlpk")
             .GET()
             .build()
@@ -774,24 +403,10 @@ class ToolManager(
         }
         return ToolSources(
             ytDlp = parseMap("ytDlp"),
-            ffmpeg = parseMap("ffmpeg")
+            ffmpeg = parseMap("ffmpeg"),
+            ffprobe = parseMap("ffprobe"),
+            deno = parseMap("deno")
         )
     }
 
-    private fun detectArch(): String {
-        val arch = System.getProperty("os.arch").lowercase()
-        return when {
-            arch.contains("aarch64") || arch.contains("arm64") -> "arm64"
-            else -> "x64"
-        }
-    }
-
-    private fun detectOs(): String {
-        val osName = System.getProperty("os.name").lowercase()
-        return when {
-            osName.contains("win") -> "windows"
-            osName.contains("mac") -> "mac"
-            else -> "linux"
-        }
-    }
 }

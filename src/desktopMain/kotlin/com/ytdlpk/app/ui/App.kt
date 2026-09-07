@@ -290,7 +290,7 @@ private fun TopBar(state: AppState, viewModel: AppViewModel, p: Palette, s: UiSt
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { viewModel.analyze() },
-            enabled = !state.isAnalyzing && !state.isDownloading && state.ytDlpReady && state.url.isNotBlank(),
+            enabled = !state.updatingTools && !state.isAnalyzing && !state.isDownloading && state.ytDlpReady && state.url.isNotBlank(),
             colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E88E5), contentColor = Color.White)
         ) { Text(s.analyze) }
     }
@@ -584,10 +584,10 @@ private fun GlobalOptionsSection(state: AppState, viewModel: AppViewModel, p: Pa
                 colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)) {
                 Text(if (state.checkingLatestTools) s.checking else s.checkLatest)
             }
-            Button(onClick = { viewModel.updateYtDlp() }, colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)) {
+            Button(onClick = { viewModel.updateYtDlp() }, enabled = !state.updatingTools && !state.isAnalyzing && !state.isDownloading, colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)) {
                 Text(s.updateYtdlp)
             }
-            Button(onClick = { viewModel.updateFfmpeg() }, colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)) {
+            Button(onClick = { viewModel.updateFfmpeg() }, enabled = !state.updatingTools && !state.isAnalyzing && !state.isDownloading, colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)) {
                 Text(s.updateFfmpeg)
             }
         }
@@ -827,7 +827,7 @@ private fun BottomActionBar(state: AppState, viewModel: AppViewModel, p: Palette
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { viewModel.download() },
-            enabled = !state.isDownloading &&
+            enabled = !state.updatingTools && !state.isDownloading &&
                 !state.isAnalyzing &&
                 state.ytDlpReady &&
                 state.metadata != null &&
@@ -853,7 +853,7 @@ private fun QuickBottomActionBar(state: AppState, viewModel: AppViewModel, p: Pa
         Spacer(Modifier.width(8.dp))
         Button(
             onClick = { viewModel.quickDownload() },
-            enabled = !state.isDownloading && !state.isAnalyzing && state.ytDlpReady && state.url.isNotBlank(),
+            enabled = !state.updatingTools && !state.isDownloading && !state.isAnalyzing && state.ytDlpReady && state.url.isNotBlank(),
             colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF4CAF50), contentColor = Color.White)
         ) { Text(s.quickDownload) }
     }

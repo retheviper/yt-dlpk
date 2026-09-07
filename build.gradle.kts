@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-version = "1.0.4"
+version = "1.0.5"
 
 kotlin {
     jvm("desktop")

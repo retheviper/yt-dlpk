@@ -17,6 +17,7 @@ import com.ytdlpk.app.service.SettingsRepository
 import com.ytdlpk.app.service.ToolManager
 import com.ytdlpk.app.service.YtDlpCommandBuilder
 import com.ytdlpk.app.service.YtDlpService
+import com.ytdlpk.app.service.systemToolDirectories
 import com.ytdlpk.app.ui.App
 import com.ytdlpk.app.ui.AppViewModel
 import com.ytdlpk.app.util.updateAppIconProgress
@@ -25,14 +26,15 @@ import java.nio.file.Paths
 
 fun main() = application {
     val appHome = remember { Paths.get(System.getProperty("user.home"), ".yt-dlpk") }
-    val processRunner = remember { ProcessRunner() }
+    val processRunner = remember {
+        ProcessRunner(pathDirectories = listOf(appHome.resolve("tools/bin")) + systemToolDirectories())
+    }
     val formatService = remember { FormatService(processRunner) }
     val settingsRepository = remember { SettingsRepository(appHome) }
     val toolManager = remember {
         ToolManager(appHome) { resourceName ->
             object {}.javaClass.classLoader.getResourceAsStream(resourceName)
-                ?.bufferedReader()
-                ?.readText()
+                ?.bufferedReader()?.use { it.readText() }
                 ?: error("Missing resource: $resourceName")
         }
     }
@@ -42,7 +44,8 @@ fun main() = application {
             processRunner = processRunner,
             formatService = formatService,
             commandBuilder = commandBuilder,
-            progressParser = ProgressParser()
+            progressParser = ProgressParser(),
+            jsRuntimePath = { toolManager.denoPath }
         )
     }
 

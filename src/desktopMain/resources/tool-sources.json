@@ -1,12 +1,29 @@
 {
   "ytDlp": {
-    "windows": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+    "windows-x64": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+    "windows-arm64": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_arm64.exe",
     "mac": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
-    "linux": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+    "linux-x64": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
+    "linux-arm64": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64"
   },
   "ffmpeg": {
-    "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
-    "mac": "https://evermeet.cx/ffmpeg/getrelease/zip",
-    "linux": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz"
+    "windows-x64": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+    "windows-arm64": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-winarm64-gpl.zip",
+    "mac-x64": "https://evermeet.cx/ffmpeg/getrelease/zip",
+    "mac-arm64": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
+    "linux-x64": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz",
+    "linux-arm64": "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
+  },
+  "ffprobe": {
+    "mac-x64": "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
+    "mac-arm64": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip"
+  },
+  "deno": {
+    "mac-x64": "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip",
+    "mac-arm64": "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip",
+    "windows-x64": "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip",
+    "windows-arm64": "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-pc-windows-msvc.zip",
+    "linux-x64": "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip",
+    "linux-arm64": "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-unknown-linux-gnu.zip"
   }
 }

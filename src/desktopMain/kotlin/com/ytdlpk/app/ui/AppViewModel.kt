@@ -12,7 +12,6 @@ import com.ytdlpk.app.model.VideoCodecPreference
 import com.ytdlpk.app.model.VideoMetadata
 import com.ytdlpk.app.model.matchesVideoCodec
 import com.ytdlpk.app.service.AnalyzeResult
-import com.ytdlpk.app.service.RunningProcess
 import com.ytdlpk.app.service.SettingsRepository
 import com.ytdlpk.app.service.ToolManager
 import com.ytdlpk.app.service.YtDlpService
@@ -22,24 +21,27 @@ import com.ytdlpk.app.util.parseResolutionScore
 import com.ytdlpk.app.util.resolutionMaxSide
 import com.ytdlpk.app.util.resolutionMinSide
 import com.ytdlpk.app.util.showDesktopNotification
+import java.nio.file.Path
+import kotlin.io.path.createDirectories
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.nio.file.Path
-import kotlin.io.path.createDirectories
 
 private data class AnalyzeCacheKey(
     val url: String,
@@ -61,18 +63,41 @@ class AppViewModel(
     @Volatile private var ffmpegPath: String? = null
     @Volatile private var ytDlpManaged: Boolean = false
     @Volatile private var ffmpegManaged: Boolean = false
-    @Volatile private var runningProcess: RunningProcess? = null
-    @Volatile private var downloadCancelRequested: Boolean = false
+    private var downloadJob: Job? = null
+    private var downloadGeneration = 0L
     @Volatile private var lastAnalyzeCacheKey: AnalyzeCacheKey? = null
     @Volatile private var lastAnalyzeResult: AnalyzeResult? = null
     private val ffmpegEnsureMutex = Mutex()
+    private var analyzeJob: Job? = null
+    private var analyzeGeneration = 0L
 
     init {
         appHome.createDirectories()
         ensureTools()
     }
 
-    fun onUrlChange(url: String) = update { it.copy(url = url) }
+    @Synchronized
+    fun onUrlChange(url: String) {
+        if (url.trim() != state.value.url.trim()) clearAnalysis()
+        update { it.copy(url = url) }
+    }
+
+    private fun clearAnalysis() {
+        analyzeGeneration++
+        analyzeJob?.cancel()
+        lastAnalyzeCacheKey = null
+        lastAnalyzeResult = null
+        update {
+            it.copy(
+                isAnalyzing = false,
+                metadata = null,
+                formats = emptyList(),
+                selectedFormatId = null,
+                selectedVideoOnlyFormatId = null,
+                selectedAudioOnlyFormatId = null
+            )
+        }
+    }
 
     fun onTabChange(kind: FormatKind) = update { state ->
         val tabSelection = when (kind) {
@@ -111,7 +136,11 @@ class AppViewModel(
         it.copy(selectedAudioOnlyFormatId = formatId)
     }
 
-    fun onPlaylistMode(mode: PlaylistMode) = update { it.copy(playlistMode = mode) }
+    @Synchronized
+    fun onPlaylistMode(mode: PlaylistMode) {
+        if (mode != state.value.playlistMode) clearAnalysis()
+        update { it.copy(playlistMode = mode) }
+    }
 
     fun onSettingsChange(settings: AppSettings) {
         settingsRepository.save(settings)
@@ -157,16 +186,18 @@ class AppViewModel(
         }
     }
 
+    @Synchronized
     fun updateYtDlp() {
         val currentPath = analyzeYtDlpPath ?: tools?.ytDlpPath
         if (currentPath == null) {
             update { it.copy(infoMessage = "yt-dlp is not ready yet.") }
             return
         }
+        if (!beginToolUpdate()) return
         scope.launch {
             try {
                 update { it.copy(toolStatus = "Checking yt-dlp version...") }
-                val currentVersion = toolManager.getYtDlpVersion(currentPath)
+                val currentVersion = withContext(Dispatchers.IO) { toolManager.getYtDlpVersion(currentPath) }
                 val latestVersion = toolManager.getLatestYtDlpVersion()
                 val comparison = toolManager.compareVersions(currentVersion, latestVersion)
                 update { it.copy(latestYtDlpVersion = latestVersion) }
@@ -180,10 +211,8 @@ class AppViewModel(
                 if (ytDlpManaged) {
                     update { it.copy(toolStatus = "Updating yt-dlp...") }
                     val updated = toolManager.updateManagedYtDlp { status -> update { s -> s.copy(toolStatus = status) } }
-                    analyzeYtDlpPath = updated.ytDlpPath
-                    ytDlpManaged = updated.ytDlpManaged
-                    tools = (tools ?: ToolPaths(updated.ytDlpPath, ffmpegPath.orEmpty(), updated.ytDlpManaged, ffmpegManaged))
-                        .copy(ytDlpPath = updated.ytDlpPath, ytDlpManaged = updated.ytDlpManaged)
+                    analyzeYtDlpPath = updated.toAbsolutePath().toString()
+                    ytDlpManaged = true
                     refreshInstalledVersions()
                     update { it.copy(toolStatus = "yt-dlp updated", infoMessage = "yt-dlp updated successfully.") }
                     return@launch
@@ -196,18 +225,24 @@ class AppViewModel(
                 }
                 refreshInstalledVersions()
                 update { it.copy(toolStatus = "yt-dlp updated", infoMessage = "yt-dlp updated successfully.") }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 update { it.copy(infoMessage = "yt-dlp update failed: ${e.message}") }
+            } finally {
+                update { it.copy(updatingTools = false) }
             }
         }
     }
 
+    @Synchronized
     fun updateFfmpeg() {
+        if (!beginToolUpdate()) return
         scope.launch {
             try {
                 val currentPath = ffmpegPath ?: tools?.ffmpegPath ?: ensureFfmpegReady()
                 update { it.copy(toolStatus = "Checking ffmpeg version...") }
-                val currentVersion = toolManager.getFfmpegVersion(currentPath)
+                val currentVersion = withContext(Dispatchers.IO) { toolManager.getFfmpegVersion(currentPath) }
                 val latestVersion = toolManager.getLatestFfmpegVersion()
                 val comparison = toolManager.compareVersions(currentVersion, latestVersion)
                 update { it.copy(latestFfmpegVersion = latestVersion) }
@@ -221,10 +256,8 @@ class AppViewModel(
                 if (ffmpegManaged) {
                     update { it.copy(toolStatus = "Updating ffmpeg...") }
                     val updated = toolManager.updateManagedFfmpeg { status -> update { s -> s.copy(toolStatus = status) } }
-                    ffmpegPath = updated.ffmpegPath
-                    ffmpegManaged = updated.ffmpegManaged
-                    tools = (tools ?: ToolPaths(analyzeYtDlpPath.orEmpty(), updated.ffmpegPath, ytDlpManaged, updated.ffmpegManaged))
-                        .copy(ffmpegPath = updated.ffmpegPath, ffmpegManaged = updated.ffmpegManaged)
+                    ffmpegPath = updated.toAbsolutePath().toString()
+                    ffmpegManaged = true
                     refreshInstalledVersions()
                     update { it.copy(toolStatus = "ffmpeg updated", infoMessage = "ffmpeg updated successfully.") }
                     return@launch
@@ -237,69 +270,66 @@ class AppViewModel(
                 }
                 refreshInstalledVersions()
                 update { it.copy(toolStatus = "ffmpeg updated", infoMessage = "ffmpeg updated successfully.") }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 update { it.copy(infoMessage = "ffmpeg update failed: ${e.message}") }
+            } finally {
+                update { it.copy(updatingTools = false) }
             }
         }
+    }
+
+    private fun beginToolUpdate(): Boolean {
+        val snapshot = state.value
+        if (snapshot.updatingTools || snapshot.isAnalyzing || snapshot.isDownloading) return false
+        clearAnalysis()
+        update { it.copy(updatingTools = true) }
+        return true
     }
 
     fun addLog(message: String) {
         update { it.copy(logs = (it.logs + message).takeLast(400)) }
     }
 
+    @Synchronized
     fun analyze() {
         val snapshot = state.value
-        val ytDlpPath = analyzeYtDlpPath ?: tools?.ytDlpPath
+        val ytDlpPath = analyzeYtDlpPath ?: tools?.ytDlpPath ?: return
         val url = snapshot.url.trim()
-        if (!snapshot.ytDlpReady || ytDlpPath == null || url.isBlank()) return
-
-        if (url != snapshot.url) {
-            update { it.copy(url = url) }
-        }
-
-        val cacheKey = AnalyzeCacheKey(url = url, playlistMode = snapshot.playlistMode)
+        if (!snapshot.ytDlpReady || url.isBlank() || snapshot.isAnalyzing || snapshot.isDownloading || snapshot.updatingTools) return
+        val cacheKey = AnalyzeCacheKey(url, snapshot.playlistMode)
         val cached = lastAnalyzeResult.takeIf { lastAnalyzeCacheKey == cacheKey }
         if (cached != null) {
-            applyAnalyzeResult(
-                metadata = cached.metadata,
-                formats = cached.formats,
-                settings = snapshot.settings,
-                logMessage = "Analyze cache hit: ${cached.formats.size} formats"
-            )
+            applyAnalyzeResult(cached.metadata, cached.formats, snapshot.settings, "Analyze cache hit: ${cached.formats.size} formats")
             return
         }
-
-        scope.launch {
-            update {
-                it.copy(
-                    isAnalyzing = true,
-                    lastError = null,
-                    metadata = null,
-                    formats = emptyList(),
-                    selectedFormatId = null,
-                    selectedVideoOnlyFormatId = null,
-                    selectedAudioOnlyFormatId = null
-                )
-            }
+        clearAnalysis()
+        val generation = analyzeGeneration
+        update { it.copy(url = url, isAnalyzing = true, lastError = null) }
+        analyzeJob = scope.launch {
             try {
                 val result = ytDlpService.analyze(ytDlpPath, url, snapshot.playlistMode)
-                lastAnalyzeCacheKey = cacheKey
-                lastAnalyzeResult = result
-                applyAnalyzeResult(
-                    metadata = result.metadata,
-                    formats = result.formats,
-                    settings = snapshot.settings,
-                    logMessage = "Analyze complete: ${result.formats.size} formats"
-                )
+                synchronized(this@AppViewModel) {
+                    if (generation == analyzeGeneration) {
+                        lastAnalyzeCacheKey = cacheKey
+                        lastAnalyzeResult = result
+                        applyAnalyzeResult(result.metadata, result.formats, state.value.settings,
+                            "Analyze complete: ${result.formats.size} formats")
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                update {
-                    it.copy(
-                        lastError = e.message,
-                        logs = (it.logs + "Analyze failed: ${e.message}").takeLast(400)
-                    )
+                synchronized(this@AppViewModel) {
+                    if (generation == analyzeGeneration) update {
+                        it.copy(lastError = e.message, logs = (it.logs + "Analyze failed: ${e.message}").takeLast(400))
+                    }
                 }
             } finally {
-                update { it.copy(isAnalyzing = false) }
+                synchronized(this@AppViewModel) {
+                    if (generation == analyzeGeneration) update { it.copy(isAnalyzing = false) }
+                }
             }
         }
     }
@@ -339,10 +369,11 @@ class AppViewModel(
         }
     }
 
+    @Synchronized
     fun download() {
         val snapshot = state.value
         val ytDlpPath = analyzeYtDlpPath ?: tools?.ytDlpPath ?: return
-        if (snapshot.isDownloading || snapshot.url.isBlank()) return
+        if (snapshot.isDownloading || snapshot.isAnalyzing || snapshot.updatingTools || snapshot.url.isBlank()) return
 
         val options = DownloadOptions(
             url = snapshot.url,
@@ -365,7 +396,7 @@ class AppViewModel(
             it.copy(
                 isDownloading = true,
                 lastError = null,
-                progress = it.progress.copy(percent = null, speed = null, eta = null, currentFile = null)
+                progress = it.progress.copy(percent = null, speed = null, eta = null, currentFile = null, itemIndex = null, itemTotal = null)
             )
         }
 
@@ -377,16 +408,17 @@ class AppViewModel(
         )
     }
 
+    @Synchronized
     fun quickDownload(urlOverride: String? = null) {
         val snapshot = state.value
         val effectiveUrl = (urlOverride ?: snapshot.url).trim()
 
         if (urlOverride != null && snapshot.url != effectiveUrl) {
-            update { it.copy(url = effectiveUrl) }
+            onUrlChange(effectiveUrl)
         }
 
-        if (snapshot.isDownloading) {
-            update { it.copy(infoMessage = "Download is already in progress.") }
+        if (snapshot.isDownloading || snapshot.updatingTools) {
+            update { it.copy(infoMessage = "A download or tool update is already in progress.") }
             return
         }
         if (effectiveUrl.isBlank()) {
@@ -424,7 +456,7 @@ class AppViewModel(
             it.copy(
                 isDownloading = true,
                 lastError = null,
-                progress = it.progress.copy(percent = null, speed = null, eta = null, currentFile = null)
+                progress = it.progress.copy(percent = null, speed = null, eta = null, currentFile = null, itemIndex = null, itemTotal = null)
             )
         }
 
@@ -436,21 +468,18 @@ class AppViewModel(
         )
     }
 
+    @Synchronized
     fun cancelDownload() {
-        downloadCancelRequested = true
-        runningProcess?.cancel()
-        runningProcess = null
-        update {
-            it.copy(
-                isDownloading = false,
-                logs = (it.logs + "Download cancelled").takeLast(400)
-            )
-        }
+        downloadGeneration++
+        downloadJob?.cancel()
+        update { it.copy(isDownloading = false, logs = (it.logs + "Download cancelled").takeLast(400)) }
     }
 
+    @Synchronized
     fun close() {
-        runningProcess?.cancel()
-        runningProcess = null
+        downloadGeneration++
+        analyzeGeneration++
+        downloadJob?.cancel()
         scope.cancel()
     }
 
@@ -460,64 +489,70 @@ class AppViewModel(
         finishLogPrefix: String,
         failurePrefix: String
     ) {
-        scope.launch {
+        val generation = ++downloadGeneration
+        val previousDownload = downloadJob
+        downloadJob = scope.launch(start = CoroutineStart.LAZY) {
             try {
+                previousDownload?.join()
                 val resolvedFfmpegPath = ensureFfmpegReady()
-                if (downloadCancelRequested || !state.value.isDownloading) {
-                    downloadCancelRequested = false
-                    return@launch
-                }
-                downloadCancelRequested = false
                 var lastProgressUpdateNanos = 0L
-                val stderrLines = mutableListOf<String>()
-                runningProcess = ytDlpService.startDownload(
-                    scope = scope,
-                    ytDlpPath = ytDlpPath,
-                    ffmpegPath = resolvedFfmpegPath,
-                    options = options,
-                    onStdoutLine = {},
-                    onStderrLine = {
-                        stderrLines += it
-                        addLog("[err] $it")
-                    },
-                    onProgress = { progress ->
-                        val now = System.nanoTime()
-                        if (now - lastProgressUpdateNanos >= PROGRESS_UPDATE_INTERVAL_NANOS || progress.percent == 100.0) {
-                            lastProgressUpdateNanos = now
-                            update { it.copy(progress = progress) }
-                        }
-                    },
-                    onExit = onExit@ { code ->
-                        runningProcess = null
-                        if (downloadCancelRequested) {
-                            downloadCancelRequested = false
-                            return@onExit
-                        }
-                        val dialogMessage = handleDownloadExit(code, stderrLines)
-                        val errorSummary = stderrSummary(stderrLines)
-                        update {
-                            it.copy(
-                                isDownloading = false,
-                                progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
-                                logs = (it.logs + "$finishLogPrefix with code $code").takeLast(400),
-                                lastError = if (code == 0) null else listOfNotNull("$failurePrefix: exit code $code", errorSummary).joinToString("\n"),
-                                errorDialogMessage = dialogMessage
-                            )
-                        }
-                    }
-                )
-            } catch (e: Throwable) {
-                runningProcess = null
-                update {
-                    it.copy(
-                        isDownloading = false,
-                        lastError = e.message,
-                        logs = (it.logs + "$failurePrefix: ${e.message}").takeLast(400),
-                        errorDialogMessage = e.message
+                val stderrLines = ArrayDeque<String>()
+                coroutineScope {
+                    val process = ytDlpService.startDownload(
+                        scope = this,
+                        ytDlpPath = ytDlpPath,
+                        ffmpegPath = resolvedFfmpegPath,
+                        options = options,
+                        onStdoutLine = {},
+                        onStderrLine = {
+                            if (stderrLines.size == 400) stderrLines.removeFirst()
+                            stderrLines.addLast(it)
+                            synchronized(this@AppViewModel) {
+                                if (generation == downloadGeneration) addLog("[err] $it")
+                            }
+                        },
+                        onProgress = { progress ->
+                            val now = System.nanoTime()
+                            if (now - lastProgressUpdateNanos >= PROGRESS_UPDATE_INTERVAL_NANOS || progress.percent == 100.0) {
+                                lastProgressUpdateNanos = now
+                                synchronized(this@AppViewModel) {
+                                    if (generation == downloadGeneration) update { it.copy(progress = progress) }
+                                }
+                            }
+                        },
+                        onExit = { code -> synchronized(this@AppViewModel) {
+                            if (generation != downloadGeneration) return@synchronized
+                            val dialogMessage = handleDownloadExit(code, stderrLines.toList())
+                            val errorSummary = stderrSummary(stderrLines.toList())
+                            update {
+                                it.copy(
+                                    isDownloading = false,
+                                    progress = if (code == 0) it.progress.copy(percent = 100.0, speed = null, eta = null) else it.progress,
+                                    logs = (it.logs + "$finishLogPrefix with code $code").takeLast(400),
+                                    lastError = if (code == 0) null else listOfNotNull("$failurePrefix: exit code $code", errorSummary).joinToString("\n"),
+                                    errorDialogMessage = dialogMessage
+                                )
+                            }
+                        } },
+                        onError = { throw it }
                     )
+                    process.join()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                synchronized(this@AppViewModel) {
+                    if (generation == downloadGeneration) update {
+                        it.copy(
+                            isDownloading = false,
+                            lastError = e.message,
+                            logs = (it.logs + "$failurePrefix: ${e.message}").takeLast(400),
+                            errorDialogMessage = e.message
+                        )
+                    }
                 }
             }
-        }
+        }.also { it.start() }
     }
 
     private fun ensureTools() {
@@ -528,6 +563,7 @@ class AppViewModel(
                     runCatching {
                         ensureFfmpegReady()
                     }.onFailure { e ->
+                        if (e is CancellationException) throw e
                         update {
                             it.copy(
                                 ffmpegReady = false,
@@ -549,6 +585,8 @@ class AppViewModel(
         return try {
             update { it.copy(toolStatus = "Checking yt-dlp...") }
             val ytDlp = toolManager.ensureYtDlp { status -> update { state -> state.copy(toolStatus = status) } }
+            val deno = toolManager.ensureDeno { status -> update { it.copy(toolStatus = status) } }
+            addLog("Deno: $deno")
             val resolvedYtDlpPath = ytDlp.toAbsolutePath().toString()
             analyzeYtDlpPath = resolvedYtDlpPath
             ytDlpManaged = ytDlp.startsWith(appHome.resolve("tools").resolve("bin"))
@@ -565,13 +603,15 @@ class AppViewModel(
             update {
                 it.copy(
                     ytDlpReady = true,
-                    toolsReady = resolvedFfmpegPath != null,
-                    toolStatus = if (resolvedFfmpegPath != null) "Tools ready" else "yt-dlp ready",
+                    toolsReady = it.ffmpegReady,
+                    toolStatus = if (it.ffmpegReady) "Tools ready" else "yt-dlp ready",
                     ytDlpVersion = ytDlpVersion + if (ytDlpManaged) " (app)" else " (system)",
                     logs = (it.logs + "yt-dlp: $resolvedYtDlpPath").takeLast(400)
                 )
             }
             resolvedYtDlpPath
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             update {
                 it.copy(
@@ -608,8 +648,8 @@ class AppViewModel(
             update {
                 it.copy(
                     ffmpegReady = true,
-                    toolsReady = ytPath != null,
-                    toolStatus = if (ytPath != null) "Tools ready" else "ffmpeg ready",
+                    toolsReady = it.ytDlpReady,
+                    toolStatus = if (it.ytDlpReady) "Tools ready" else "ffmpeg ready",
                     ffmpegVersion = ffmpegVersion + if (ffmpegManaged) " (app)" else " (system)",
                     logs = (it.logs + "ffmpeg: $resolvedFfmpegPath").takeLast(400)
                 )

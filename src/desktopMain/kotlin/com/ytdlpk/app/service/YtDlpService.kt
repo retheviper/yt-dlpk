@@ -4,6 +4,7 @@ import com.ytdlpk.app.model.DownloadOptions
 import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.ProgressInfo
 import com.ytdlpk.app.model.VideoMetadata
+import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -21,7 +22,8 @@ class YtDlpService(
     private val processRunner: ProcessRunner,
     private val formatService: FormatService,
     private val commandBuilder: YtDlpCommandBuilder,
-    private val progressParser: ProgressParser
+    private val progressParser: ProgressParser,
+    private val jsRuntimePath: () -> Path? = { null }
 ) {
     suspend fun analyze(ytDlpPath: String, url: String, playlistMode: PlaylistMode): AnalyzeResult {
         val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode)
@@ -44,6 +46,8 @@ class YtDlpService(
     ): AnalyzeJson {
         val cmd = mutableListOf(
             ytDlpPath,
+            "--ignore-config",
+            "--no-colors",
             "--dump-single-json",
             "--skip-download",
             "--no-warnings",
@@ -52,7 +56,8 @@ class YtDlpService(
         if (playlistMode == PlaylistMode.SINGLE) {
             cmd += "--no-playlist"
         }
-        cmd += url
+        cmd += jsRuntimeArguments()
+        cmd += listOf("--", url)
 
         val result = processRunner.run(cmd)
         if (result.exitCode != 0 || result.stdoutLines.isEmpty()) {
@@ -72,7 +77,11 @@ class YtDlpService(
         ytDlpPath: String,
         url: String,
         playlistMode: PlaylistMode = PlaylistMode.PLAYLIST
-    ) = formatService.fetchFormats(ytDlpPath, url, playlistMode)
+    ) = formatService.fetchFormats(ytDlpPath, url, playlistMode, jsRuntimeArguments())
+
+    private fun jsRuntimeArguments(): List<String> = jsRuntimePath()?.let {
+        listOf("--js-runtimes", "deno:${it.toAbsolutePath()}")
+    }.orEmpty()
 
     fun startDownload(
         scope: CoroutineScope,
@@ -82,9 +91,11 @@ class YtDlpService(
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit,
         onProgress: (ProgressInfo) -> Unit,
-        onExit: (Int) -> Unit
+        onExit: (Int) -> Unit,
+        onError: (Throwable) -> Unit = { throw it }
     ): RunningProcess {
-        val command = commandBuilder.build(ytDlpPath, ffmpegPath, options)
+        val command = commandBuilder.build(ytDlpPath, ffmpegPath, options).toMutableList()
+            .apply { addAll(1, jsRuntimeArguments()) }
         var progress = ProgressInfo(null, null, null, null, null, null)
 
         return processRunner.runStreaming(
@@ -96,7 +107,8 @@ class YtDlpService(
                 onProgress(progress)
             },
             onStderrLine = onStderrLine,
-            onExit = onExit
+            onExit = onExit,
+            onError = onError
         )
     }
 }

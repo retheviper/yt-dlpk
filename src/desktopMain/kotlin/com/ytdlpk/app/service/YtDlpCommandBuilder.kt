@@ -19,6 +19,8 @@ class YtDlpCommandBuilder(
 
         val cmd = mutableListOf(
             ytDlpPath,
+            "--ignore-config",
+            "--no-colors",
             "--newline",
             "--ffmpeg-location", ffmpegPath,
             "-o", "${options.outputDirectory}/${options.fileNameTemplate}"
@@ -54,7 +56,7 @@ class YtDlpCommandBuilder(
             cmd += listOf("--write-auto-subs", "--write-subs", "--sub-lang", options.subLang, "--convert-subs", "srt")
         }
 
-        cmd += options.url
+        cmd += listOf("--", options.url)
         return cmd
     }
 

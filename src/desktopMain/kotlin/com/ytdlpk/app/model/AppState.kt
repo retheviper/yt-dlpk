@@ -32,6 +32,7 @@ data class AppState(
     val ffmpegVersion: String = "-",
     val latestYtDlpVersion: String = "-",
     val latestFfmpegVersion: String = "-",
+    val updatingTools: Boolean = false,
     val checkingLatestTools: Boolean = false
 ) {
     val selectedFormat: FormatEntry?

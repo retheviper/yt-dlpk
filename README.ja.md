@@ -22,12 +22,12 @@
 
 ## 推奨セットアップ
 
-`yt-dlpk` は `yt-dlp` と `ffmpeg` が見つからない場合、アプリ管理のツールとしてダウンロードできます。ただし、システムに直接インストールしておくことを推奨します。システムにインストールされたツールの方が起動時の準備が速く、更新もしやすくなります。
+`yt-dlpk` は動作するシステムツールを優先します。不足している `yt-dlp`、`ffmpeg`/`ffprobe`、Deno（YouTube 用 JavaScript ランタイム）は `~/.yt-dlpk/tools/bin` にダウンロードします。実行ファイルはアプリのインストールパッケージには含まれません。初回の準備にはインターネット接続が必要で、macOS では Intel / Apple Silicon に対応するツールを取得します。詳細は[ツール管理](docs/tool-management.md)をご覧ください。
 
 macOS Homebrew:
 
 ```sh
-brew install yt-dlp ffmpeg
+brew install yt-dlp ffmpeg deno
 ```
 
 Windows winget:
