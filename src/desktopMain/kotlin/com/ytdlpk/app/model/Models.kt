@@ -173,7 +173,8 @@ data class AppSettings(
     val notifyOnDownloadCompleteWhenInactive: Boolean = true,
     val homeTab: HomeTab = HomeTab.STANDARD,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val language: AppLanguage = AppLanguage.SYSTEM
+    val language: AppLanguage = AppLanguage.SYSTEM,
+    val cookieSettings: CookieSettings = CookieSettings()
 )
 
 data class ToolPaths(
@@ -198,5 +199,6 @@ data class DownloadOptions(
     val extractAudio: Boolean,
     val audioFormat: String,
     val mergeOutputFormat: String,
-    val videoCodecPreference: VideoCodecPreference = VideoCodecPreference.ALL
+    val videoCodecPreference: VideoCodecPreference = VideoCodecPreference.ALL,
+    val cookieSettings: CookieSettings = CookieSettings()
 )

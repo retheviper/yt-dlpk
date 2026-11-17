@@ -63,6 +63,14 @@ choco install yt-dlp ffmpeg
 - 保存先フォルダを先に決めておくと管理しやすくなります。
 - プレイリストURLでは、全体保存の設定を必ず確認してください。
 
+## ログイン・年齢確認が必要な動画
+
+ブラウザでYouTubeにログインし、その動画を再生できることを確認してください。アプリの `設定 > ダウンロードルール > ログイン認証 (Cookie)` で `ブラウザから取得` とログイン中のブラウザを選びます。プロファイルは空欄で自動選択されます。複数ある場合は名前（例: `Profile 1`）またはパスを指定できます。設定は解析・通常ダウンロード・クイックダウンロードに共通です。
+
+取得に失敗する場合は `Cookieファイル` を選び、Netscape形式の `cookies.txt` を指定してください。macOSではキーチェーンへのアクセス許可、Safariではフルディスクアクセスが必要になる場合があります。Windowsではブラウザを完全に終了するとCookieデータベースのロックが解除されることがあります。Chrome/Edgeの暗号化で取得できない場合はFirefoxまたはCookieファイルを使用してください。
+
+初期設定は `使用しない` です。アプリの設定にはブラウザ・プロファイル・ファイルパスだけを保存します。Cookieファイルにはログイン情報が含まれるため、共有やGitへの追加はしないでください。Cookieでアカウントの視聴権限は変わりません。有効期限が切れた場合は再ログインやファイルの更新が必要です。[yt-dlpのFAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)と[YouTube Cookieの案内](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)も参照してください。
+
 ## ローカルビルド
 
 JDK 25 が必要です。

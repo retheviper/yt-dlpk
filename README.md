@@ -63,6 +63,14 @@ choco install yt-dlp ffmpeg
 - Set your output folder first so files are easy to find.
 - For playlist links, double-check whether `playlist all` is enabled.
 
+## Videos That Require Login or Age Verification
+
+Sign into YouTube in your browser and confirm that the video plays. In `Settings > Download Rules > Login authentication (cookies)`, choose `From browser` and the signed-in browser. Leave the profile blank for automatic selection, or enter its name (for example, `Profile 1`) or path. This setting applies to analysis, standard downloads, and quick downloads.
+
+If browser extraction fails, choose `Cookie file` and select a Netscape-format `cookies.txt`. macOS may require Keychain access; Safari cookies may require Full Disk Access. On Windows, closing the browser can release cookie database locks; if Chrome/Edge encryption prevents extraction, use Firefox or a cookie file.
+
+Authentication is off by default. App settings store only the browser, profile, and file path. Cookie files contain login credentials: do not share or commit them. Cookies do not grant access beyond your account's permissions and may need refreshing when they expire. See the [yt-dlp cookie FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) and [YouTube cookie guide](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
+
 ## Local Build
 
 JDK 25 is required.

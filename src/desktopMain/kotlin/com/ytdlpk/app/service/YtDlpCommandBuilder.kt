@@ -26,6 +26,8 @@ class YtDlpCommandBuilder(
             "-o", "${options.outputDirectory}/${options.fileNameTemplate}"
         )
 
+        cmd += options.cookieSettings.arguments()
+
         if (shouldForceMergeOutputFormat(options)) {
             cmd += listOf("--merge-output-format", options.mergeOutputFormat)
         }

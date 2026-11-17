@@ -59,6 +59,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ytdlpk.app.model.AppLanguage
 import com.ytdlpk.app.model.AppState
+import com.ytdlpk.app.model.CookieBrowser
+import com.ytdlpk.app.model.CookieSettings
+import com.ytdlpk.app.model.CookieSource
 import com.ytdlpk.app.model.FormatEntry
 import com.ytdlpk.app.model.FormatKind
 import com.ytdlpk.app.model.HomeTab
@@ -69,6 +72,7 @@ import com.ytdlpk.app.model.VideoCodecPreference
 import com.ytdlpk.app.util.formatDuration
 import com.ytdlpk.app.util.formatSortScore
 import com.ytdlpk.app.util.pickDirectory
+import com.ytdlpk.app.util.pickCookieFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -480,6 +484,13 @@ private fun OptionsSection(state: AppState, viewModel: AppViewModel, p: Palette,
     val videoCodecOptions = VideoCodecPreference.entries
 
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        CookieAuthenticationSection(
+            settings = settings.cookieSettings,
+            onChange = { viewModel.onSettingsChange(settings.copy(cookieSettings = it)) },
+            p = p,
+            s = s
+        )
+
         Text(s.saveLocation, color = p.textMain)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -564,6 +575,80 @@ private fun OptionsSection(state: AppState, viewModel: AppViewModel, p: Palette,
             )
         }
     }
+}
+
+@Composable
+private fun CookieAuthenticationSection(
+    settings: CookieSettings,
+    onChange: (CookieSettings) -> Unit,
+    p: Palette,
+    s: UiStrings
+) {
+    Text(s.cookieAuthentication, color = p.textMain, fontWeight = FontWeight.SemiBold)
+    SettingDropdown(
+        current = settings.source,
+        options = CookieSource.entries,
+        onSelect = { onChange(settings.copy(source = it)) },
+        width = 260.dp,
+        p = p,
+        label = { source ->
+            when (source) {
+                CookieSource.NONE -> s.cookieNone
+                CookieSource.BROWSER -> s.cookieBrowser
+                CookieSource.FILE -> s.cookieFile
+            }
+        }
+    )
+    val fieldColors = TextFieldDefaults.outlinedTextFieldColors(
+        textColor = p.textMain,
+        backgroundColor = p.panelSoft,
+        cursorColor = p.accent,
+        focusedBorderColor = p.accent,
+        unfocusedBorderColor = p.textSub.copy(alpha = 0.6f),
+        focusedLabelColor = p.accent,
+        unfocusedLabelColor = p.textSub
+    )
+    when (settings.source) {
+        CookieSource.NONE -> Unit
+        CookieSource.BROWSER -> {
+            SettingDropdown(
+                current = settings.browser,
+                options = CookieBrowser.entries,
+                onSelect = { onChange(settings.copy(browser = it)) },
+                width = 260.dp,
+                p = p,
+                label = { it.label }
+            )
+            OutlinedTextField(
+                value = settings.browserProfile,
+                onValueChange = { onChange(settings.copy(browserProfile = it)) },
+                label = { Text(s.browserProfile) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                colors = fieldColors
+            )
+        }
+        CookieSource.FILE -> Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = settings.filePath,
+                onValueChange = { onChange(settings.copy(filePath = it)) },
+                label = { Text(s.cookieFile + " (cookies.txt)") },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                colors = fieldColors
+            )
+            Button(
+                onClick = { pickCookieFile(settings.filePath)?.let { onChange(settings.copy(filePath = it)) } },
+                colors = ButtonDefaults.buttonColors(backgroundColor = p.panelSoft, contentColor = p.textMain)
+            ) { Text(s.browse) }
+        }
+    }
+    Text(s.cookieHint, color = p.textSub)
+    Spacer(Modifier.height(6.dp))
 }
 
 @Composable

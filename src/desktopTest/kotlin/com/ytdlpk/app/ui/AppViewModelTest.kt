@@ -1,6 +1,10 @@
 package com.ytdlpk.app.ui
 
+import com.ytdlpk.app.model.AppLanguage
 import com.ytdlpk.app.model.AppSettings
+import com.ytdlpk.app.model.CookieBrowser
+import com.ytdlpk.app.model.CookieSettings
+import com.ytdlpk.app.model.CookieSource
 import com.ytdlpk.app.service.FormatService
 import com.ytdlpk.app.service.ProcessRunner
 import com.ytdlpk.app.service.ProgressParser
@@ -16,9 +20,12 @@ import kotlinx.coroutines.withTimeout
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempDirectory
+import kotlin.io.path.createTempFile
 import kotlin.io.path.writeText
 
-private class ViewModelFixture : AutoCloseable {
+private val browserCookies = CookieSettings(CookieSource.BROWSER, CookieBrowser.FIREFOX, "Profile 1")
+
+private class ViewModelFixture(cookieSettings: CookieSettings = CookieSettings()) : AutoCloseable {
     private val home = createTempDirectory("view-model-test-")
     private val bin = home.resolve("bin").createDirectories()
     val viewModel: AppViewModel
@@ -33,13 +40,22 @@ private class ViewModelFixture : AutoCloseable {
         executable("deno", "echo 'deno 2.9.6'")
         executable("yt-dlp", """
             analyze=false
+            authenticated=false
+            previous=''
             for arg in "${'$'}@"; do
                 [ "${'$'}arg" = '--version' ] && { echo '2026.09.01'; exit 0; }
                 [ "${'$'}arg" = '--dump-single-json' ] && analyze=true
+                [ "${'$'}previous" = '--cookies-from-browser' ] && [ "${'$'}arg" = 'firefox:Profile 1' ] && authenticated=true
+                [ "${'$'}previous" = '--cookies' ] && [ -f "${'$'}arg" ] && authenticated=true
+                previous="${'$'}arg"
                 url="${'$'}arg"
             done
+            if [ "${'$'}url" = 'https://example.com/age-restricted' ] && ! ${'$'}authenticated; then
+                echo 'ERROR: [youtube] fixture: Sign in to confirm your age.' >&2
+                exit 1
+            fi
             if ${'$'}analyze; then
-                echo '{"title":"fixture","formats":[{"format_id":"video-a","ext":"mp4","vcodec":"avc1","acodec":"mp4a"}]}'
+                printf '{"title":"%s","formats":[{"format_id":"video-a","ext":"mp4","vcodec":"avc1","acodec":"mp4a"}]}\n' "${'$'}authenticated"
             else
                 echo "started ${'$'}url" >&2
                 [ "${'$'}url" = 'https://example.com/slow' ] && /bin/sleep 30
@@ -49,7 +65,7 @@ private class ViewModelFixture : AutoCloseable {
         val runner = ProcessRunner(pathDirectories = listOf(bin, Path.of("/usr/bin"), Path.of("/bin")))
         val formats = FormatService(runner)
         val settings = SettingsRepository(home)
-        settings.save(AppSettings(notifyOnDownloadCompleteWhenInactive = false))
+        settings.save(AppSettings(notifyOnDownloadCompleteWhenInactive = false, cookieSettings = cookieSettings))
         viewModel = AppViewModel(home, settings,
             ToolManager(home, os = "mac", searchDirectories = listOf(bin), resourceLoader = { "{}" }),
             YtDlpService(runner, formats, YtDlpCommandBuilder(formats), ProgressParser()))
@@ -65,6 +81,77 @@ private class ViewModelFixture : AutoCloseable {
 
 class AppViewModelTest : StringSpec(spec@{
     if (detectToolOs() == "windows") return@spec
+    "quick download passes the configured browser login to age-restricted videos" {
+        ViewModelFixture(browserCookies).use { fixture ->
+            fixture.ready()
+            val vm = fixture.viewModel
+            vm.quickDownload("https://example.com/age-restricted")
+            withTimeout(5_000) { vm.state.first { !it.isDownloading } }
+            vm.state.value.lastError shouldBe null
+            vm.state.value.logs.any { it.contains("Quick download finished with code 0") } shouldBe true
+        }
+    }
+
+    "analysis and standard download use the same browser login" {
+        ViewModelFixture(browserCookies).use { fixture ->
+            fixture.ready()
+            val vm = fixture.viewModel
+            vm.onUrlChange("https://example.com/age-restricted")
+            vm.analyze()
+            val analyzed = withTimeout(5_000) { vm.state.first { !it.isAnalyzing } }
+            analyzed.lastError shouldBe null
+            analyzed.metadata?.title shouldBe "true"
+            vm.download()
+            withTimeout(5_000) { vm.state.first { !it.isDownloading } }
+            vm.state.value.lastError shouldBe null
+            vm.state.value.logs.any { it.contains("Download finished with code 0") } shouldBe true
+        }
+    }
+
+    "cookie file authentication reaches quick download" {
+        val cookieFile = createTempFile("cookies with spaces", ".txt")
+        try {
+            ViewModelFixture(CookieSettings(source = CookieSource.FILE, filePath = cookieFile.toString())).use { fixture ->
+                fixture.ready()
+                val vm = fixture.viewModel
+                vm.quickDownload("https://example.com/age-restricted")
+                withTimeout(5_000) { vm.state.first { !it.isDownloading } }
+                vm.state.value.lastError shouldBe null
+                vm.state.value.logs.any { it.contains("Quick download finished with code 0") } shouldBe true
+            }
+        } finally { cookieFile.toFile().delete() }
+    }
+
+    "changing authentication clears cached anonymous analysis" {
+        ViewModelFixture().use { fixture ->
+            fixture.ready()
+            val vm = fixture.viewModel
+            vm.onUrlChange("https://example.com/a")
+            vm.analyze()
+            withTimeout(5_000) { vm.state.first { !it.isAnalyzing } }.metadata?.title shouldBe "false"
+            vm.onSettingsChange(vm.state.value.settings.copy(cookieSettings = browserCookies))
+            vm.state.value.metadata shouldBe null
+            vm.analyze()
+            withTimeout(5_000) { vm.state.first { !it.isAnalyzing } }.metadata?.title shouldBe "true"
+        }
+    }
+
+    "age verification failure explains where to configure authentication in the selected language" {
+        ViewModelFixture().use { fixture ->
+            fixture.ready()
+            val vm = fixture.viewModel
+            vm.onSettingsChange(vm.state.value.settings.copy(language = AppLanguage.KOREAN))
+            vm.onUrlChange("https://example.com/age-restricted")
+            vm.analyze()
+            val failed = withTimeout(5_000) { vm.state.first { !it.isAnalyzing } }
+            failed.lastError?.contains("설정 > 다운로드 규칙 > 로그인 인증 (쿠키)") shouldBe true
+            failed.lastError?.contains("Sign in to confirm your age") shouldBe true
+            vm.quickDownload()
+            val downloadFailed = withTimeout(5_000) { vm.state.first { !it.isDownloading } }
+            downloadFailed.lastError?.contains("설정 > 다운로드 규칙 > 로그인 인증 (쿠키)") shouldBe true
+        }
+    }
+
     "changing URL clears formats from the previous video" {
         ViewModelFixture().use { fixture ->
             fixture.ready()

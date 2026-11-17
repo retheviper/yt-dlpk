@@ -142,7 +142,9 @@ class AppViewModel(
         update { it.copy(playlistMode = mode) }
     }
 
+    @Synchronized
     fun onSettingsChange(settings: AppSettings) {
+        if (settings.cookieSettings != state.value.settings.cookieSettings) clearAnalysis()
         settingsRepository.save(settings)
         update { state ->
             val selected = state.selectedFormat
@@ -309,7 +311,7 @@ class AppViewModel(
         update { it.copy(url = url, isAnalyzing = true, lastError = null) }
         analyzeJob = scope.launch {
             try {
-                val result = ytDlpService.analyze(ytDlpPath, url, snapshot.playlistMode)
+                val result = ytDlpService.analyze(ytDlpPath, url, snapshot.playlistMode, snapshot.settings.cookieSettings)
                 synchronized(this@AppViewModel) {
                     if (generation == analyzeGeneration) {
                         lastAnalyzeCacheKey = cacheKey
@@ -323,7 +325,7 @@ class AppViewModel(
             } catch (e: Throwable) {
                 synchronized(this@AppViewModel) {
                     if (generation == analyzeGeneration) update {
-                        it.copy(lastError = e.message, logs = (it.logs + "Analyze failed: ${e.message}").takeLast(400))
+                        it.copy(lastError = authenticationHint(e.message), logs = (it.logs + "Analyze failed: ${e.message}").takeLast(400))
                     }
                 }
             } finally {
@@ -389,7 +391,8 @@ class AppViewModel(
             extractAudio = snapshot.settings.extractAudio,
             audioFormat = snapshot.settings.audioFormat,
             mergeOutputFormat = snapshot.settings.mergeOutputFormat,
-            videoCodecPreference = snapshot.settings.videoCodecPreference
+            videoCodecPreference = snapshot.settings.videoCodecPreference,
+            cookieSettings = snapshot.settings.cookieSettings
         )
 
         update {
@@ -449,7 +452,8 @@ class AppViewModel(
             extractAudio = snapshot.settings.extractAudio,
             audioFormat = snapshot.settings.audioFormat,
             mergeOutputFormat = snapshot.settings.mergeOutputFormat,
-            videoCodecPreference = snapshot.settings.videoCodecPreference
+            videoCodecPreference = snapshot.settings.videoCodecPreference,
+            cookieSettings = snapshot.settings.cookieSettings
         )
 
         update {
@@ -523,7 +527,7 @@ class AppViewModel(
                         onExit = { code -> synchronized(this@AppViewModel) {
                             if (generation != downloadGeneration) return@synchronized
                             val dialogMessage = handleDownloadExit(code, stderrLines.toList())
-                            val errorSummary = stderrSummary(stderrLines.toList())
+                            val errorSummary = authenticationHint(stderrSummary(stderrLines.toList()))
                             update {
                                 it.copy(
                                     isDownloading = false,
@@ -692,7 +696,7 @@ class AppViewModel(
 
         val failureMessage = listOfNotNull(
             "${s.downloadFailedNotification} (exit code: $code)",
-            stderrSummary(stderrLines)
+            authenticationHint(stderrSummary(stderrLines))
         ).joinToString("\n\n")
         if (isFocused) {
             return failureMessage
@@ -714,6 +718,11 @@ class AppViewModel(
                 trimmed.isNotEmpty() && !trimmed.startsWith("[download]")
             }
             ?.trim()
+    }
+
+    private fun authenticationHint(message: String?): String? {
+        if (message?.contains("Sign in to confirm your age", ignoreCase = true) != true) return message
+        return uiStrings(state.value.settings.language).ageRestrictionHint + "\n\n" + message
     }
 
     private fun pickBestFormatId(

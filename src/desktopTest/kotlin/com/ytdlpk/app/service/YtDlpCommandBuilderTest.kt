@@ -1,6 +1,9 @@
 package com.ytdlpk.app.service
 
 import com.ytdlpk.app.model.DownloadOptions
+import com.ytdlpk.app.model.CookieBrowser
+import com.ytdlpk.app.model.CookieSettings
+import com.ytdlpk.app.model.CookieSource
 import com.ytdlpk.app.model.FormatEntry
 import com.ytdlpk.app.model.FormatKind
 import com.ytdlpk.app.model.PlaylistMode
@@ -10,6 +13,7 @@ import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainAll
 import io.kotest.matchers.shouldBe
+import kotlin.io.path.createTempFile
 
 class YtDlpCommandBuilderTest : StringSpec({
     val builder = YtDlpCommandBuilder(FormatService(ProcessRunner()))
@@ -56,6 +60,59 @@ class YtDlpCommandBuilderTest : StringSpec({
         val command = builder.build("yt-dlp", "ffmpeg", options(playlistMode = PlaylistMode.SINGLE))
 
         command shouldContain "--no-playlist"
+    }
+
+    "authentication is opt-in and ignores inactive inputs" {
+        val command = builder.build("yt-dlp", "ffmpeg", options().copy(
+            cookieSettings = CookieSettings(browserProfile = "unused\nprofile", filePath = "/missing/file")
+        ))
+        command.contains("--cookies-from-browser") shouldBe false
+        command.contains("--cookies") shouldBe false
+    }
+
+    "browser authentication preserves a profile containing spaces as one argument" {
+        val command = builder.build("yt-dlp", "ffmpeg", options().copy(
+            cookieSettings = CookieSettings(CookieSource.BROWSER, CookieBrowser.CHROME, "Profile 1")
+        ))
+        command[command.indexOf("--cookies-from-browser") + 1] shouldBe "chrome:Profile 1"
+        command.takeLast(2) shouldBe listOf("--", options().url)
+        command.contains("--cookies") shouldBe false
+    }
+
+    "blank browser profile leaves profile selection to yt-dlp" {
+        val command = builder.build("yt-dlp", "ffmpeg", options().copy(
+            cookieSettings = CookieSettings(CookieSource.BROWSER, CookieBrowser.SAFARI)
+        ))
+        command[command.indexOf("--cookies-from-browser") + 1] shouldBe "safari"
+    }
+
+    "cookie file path containing spaces is passed as one argument" {
+        val file = createTempFile("cookies with spaces", ".txt")
+        try {
+            val command = builder.build("yt-dlp", "ffmpeg", options().copy(
+                cookieSettings = CookieSettings(source = CookieSource.FILE, filePath = file.toString())
+            ))
+            command[command.indexOf("--cookies") + 1] shouldBe file.toAbsolutePath().toString()
+            command.contains("--cookies-from-browser") shouldBe false
+        } finally { file.toFile().delete() }
+    }
+
+    "cookie file authentication rejects empty or missing paths" {
+        for (path in listOf("", "/missing-ytdlpk-cookie-fixture/cookies.txt")) {
+            shouldThrow<IllegalArgumentException> {
+                builder.build("yt-dlp", "ffmpeg", options().copy(
+                    cookieSettings = CookieSettings(source = CookieSource.FILE, filePath = path)
+                ))
+            }
+        }
+    }
+
+    "browser authentication rejects control characters in profiles" {
+        shouldThrow<IllegalArgumentException> {
+            builder.build("yt-dlp", "ffmpeg", options().copy(
+                cookieSettings = CookieSettings(CookieSource.BROWSER, browserProfile = "bad\nprofile")
+            ))
+        }
     }
 
     "separates a URL from options and ignores external CLI configuration" {

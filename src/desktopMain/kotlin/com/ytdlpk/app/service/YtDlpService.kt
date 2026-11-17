@@ -1,5 +1,6 @@
 package com.ytdlpk.app.service
 
+import com.ytdlpk.app.model.CookieSettings
 import com.ytdlpk.app.model.DownloadOptions
 import com.ytdlpk.app.model.PlaylistMode
 import com.ytdlpk.app.model.ProgressInfo
@@ -25,8 +26,13 @@ class YtDlpService(
     private val progressParser: ProgressParser,
     private val jsRuntimePath: () -> Path? = { null }
 ) {
-    suspend fun analyze(ytDlpPath: String, url: String, playlistMode: PlaylistMode): AnalyzeResult {
-        val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode)
+    suspend fun analyze(
+        ytDlpPath: String,
+        url: String,
+        playlistMode: PlaylistMode,
+        cookieSettings: CookieSettings = CookieSettings()
+    ): AnalyzeResult {
+        val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode, cookieSettings)
         val source = json.firstEntry ?: json.root
         return AnalyzeResult(
             metadata = metadataFromJson(json.root, source, json.entries),
@@ -34,15 +40,21 @@ class YtDlpService(
         )
     }
 
-    suspend fun analyzeMetadata(ytDlpPath: String, url: String, playlistMode: PlaylistMode): VideoMetadata {
-        val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode)
+    suspend fun analyzeMetadata(
+        ytDlpPath: String,
+        url: String,
+        playlistMode: PlaylistMode,
+        cookieSettings: CookieSettings = CookieSettings()
+    ): VideoMetadata {
+        val json = fetchAnalyzeJson(ytDlpPath, url, playlistMode, cookieSettings)
         return metadataFromJson(json.root, json.firstEntry ?: json.root, json.entries)
     }
 
     private suspend fun fetchAnalyzeJson(
         ytDlpPath: String,
         url: String,
-        playlistMode: PlaylistMode
+        playlistMode: PlaylistMode,
+        cookieSettings: CookieSettings
     ): AnalyzeJson {
         val cmd = mutableListOf(
             ytDlpPath,
@@ -57,6 +69,7 @@ class YtDlpService(
             cmd += "--no-playlist"
         }
         cmd += jsRuntimeArguments()
+        cmd += cookieSettings.arguments()
         cmd += listOf("--", url)
 
         val result = processRunner.run(cmd)
@@ -76,8 +89,9 @@ class YtDlpService(
     suspend fun analyzeFormats(
         ytDlpPath: String,
         url: String,
-        playlistMode: PlaylistMode = PlaylistMode.PLAYLIST
-    ) = formatService.fetchFormats(ytDlpPath, url, playlistMode, jsRuntimeArguments())
+        playlistMode: PlaylistMode = PlaylistMode.PLAYLIST,
+        cookieSettings: CookieSettings = CookieSettings()
+    ) = formatService.fetchFormats(ytDlpPath, url, playlistMode, jsRuntimeArguments() + cookieSettings.arguments())
 
     private fun jsRuntimeArguments(): List<String> = jsRuntimePath()?.let {
         listOf("--js-runtimes", "deno:${it.toAbsolutePath()}")
